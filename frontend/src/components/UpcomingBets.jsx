@@ -1,0 +1,806 @@
+import React, { useState, useEffect } from 'react';
+
+export default function UpcomingBets() {
+  // Config inputs
+  const [initialBankroll, setInitialBankroll] = useState(() => {
+    const saved = localStorage.getItem('wnba_initial_bankroll');
+    return saved !== null ? Math.max(0, parseFloat(saved)) : 100;
+  });
+  const [minEdgePct, setMinEdgePct] = useState(3.0); // entered as percentage, e.g. 3.0%
+  const [flatWagerPct, setFlatWagerPct] = useState(12.0); // entered as percentage, e.g. 12.0%
+  const [marketSource, setMarketSource] = useState('polymarket'); // 'polymarket' or 'bookie'
+
+  // Data and UI state
+  const [bets, setBets] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [scraping, setScraping] = useState(false);
+  const [error, setError] = useState(null);
+  const [expandedGames, setExpandedGames] = useState({}); // { [gameIndex]: boolean }
+
+  useEffect(() => {
+    localStorage.setItem('wnba_initial_bankroll', initialBankroll);
+  }, [initialBankroll]);
+
+  const fetchUpcomingBets = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/upcoming_bets');
+      if (!res.ok) {
+        throw new Error(`Server returned status ${res.status}`);
+      }
+      const data = await res.json();
+      setBets(data);
+    } catch (err) {
+      setError(`Failed to fetch upcoming bets: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleScrape = async () => {
+    setScraping(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/scrape_polymarket', { method: 'POST' });
+      if (!res.ok) {
+        throw new Error(`Server returned status ${res.status}`);
+      }
+      const data = await res.json();
+      setBets(data);
+    } catch (err) {
+      setError(`Failed to run live Polymarket scraper: ${err.message}`);
+    } finally {
+      setScraping(false);
+    }
+  };
+
+  const handleConfirmBet = async (bet, wagerType, wagerAmount, odds, recommendedSide) => {
+    try {
+      const res = await fetch('/api/confirm_bet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          match_date: bet.date,
+          home_team: bet.home_team_abbr,
+          away_team: bet.away_team_abbr,
+          recommended_side: recommendedSide,
+          wager_type: wagerType,
+          wager_amount: parseFloat(wagerAmount.toFixed(2)),
+          odds: parseFloat(odds.toFixed(2))
+        })
+      });
+      if (!res.ok) throw new Error('Failed to confirm bet');
+      fetchUpcomingBets();
+    } catch (err) {
+      setError(`Error confirming bet: ${err.message}`);
+    }
+  };
+
+  const handleSettleBet = async (bet, outcome) => {
+    try {
+      const res = await fetch('/api/settle_bet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          match_date: bet.date,
+          home_team: bet.home_team_abbr,
+          away_team: bet.away_team_abbr,
+          outcome: outcome
+        })
+      });
+      if (!res.ok) throw new Error('Failed to settle bet');
+      fetchUpcomingBets();
+    } catch (err) {
+      setError(`Error settling bet: ${err.message}`);
+    }
+  };
+
+  const handleDeleteBet = async (bet) => {
+    try {
+      const res = await fetch('/api/delete_bet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          match_date: bet.date,
+          home_team: bet.home_team_abbr,
+          away_team: bet.away_team_abbr
+        })
+      });
+      if (!res.ok) throw new Error('Failed to delete bet');
+      fetchUpcomingBets();
+    } catch (err) {
+      setError(`Error resetting/cancelling bet: ${err.message}`);
+    }
+  };
+
+  useEffect(() => {
+    fetchUpcomingBets();
+  }, []);
+
+  const toggleExpand = (index) => {
+    setExpandedGames(prev => ({
+      ...prev,
+      [index]: !prev[index]
+    }));
+  };
+
+  // Calculations for bankroll & stats
+  const settledPnL = bets.reduce((sum, bet) => {
+    if (bet.confirmed_bet && bet.confirmed_bet.outcome !== null) {
+      return sum + (bet.confirmed_bet.bankroll_change || 0);
+    }
+    return sum;
+  }, 0);
+
+  const currentBankroll = initialBankroll + settledPnL;
+
+  const trackedBets = bets.filter(b => b.confirmed_bet !== null);
+  const trackedCount = trackedBets.length;
+  const wins = trackedBets.filter(b => b.confirmed_bet.outcome === 'won').length;
+  const losses = trackedBets.filter(b => b.confirmed_bet.outcome === 'lost').length;
+  const totalSettled = wins + losses;
+  const winRate = totalSettled > 0 ? ((wins / totalSettled) * 100).toFixed(1) : '0.0';
+
+  return (
+    <div className="sim-dashboard-grid">
+      {/* Summary Dashboard Card */}
+      <div className="glass-card" style={{ marginBottom: '16px', padding: '20px' }}>
+        <div className="card-title" style={{ marginBottom: '16px' }}>
+          <span>Tracked Bets Performance Summary</span>
+          <span className="badge" style={{ background: 'rgba(99, 102, 241, 0.15)', borderColor: 'var(--neon-indigo)', color: 'var(--neon-indigo)' }}>
+            Stats
+          </span>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '20px' }}>
+          <div style={{ textAlign: 'center', background: 'rgba(255, 255, 255, 0.02)', padding: '12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.05)' }}>
+            <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>Tracked Bets</div>
+            <div style={{ fontSize: '1.6rem', fontWeight: '800', color: 'var(--color-text-main)' }}>{trackedCount}</div>
+          </div>
+          <div style={{ textAlign: 'center', background: 'rgba(255, 255, 255, 0.02)', padding: '12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.05)' }}>
+            <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>Wins / Losses</div>
+            <div style={{ fontSize: '1.6rem', fontWeight: '800', color: 'var(--color-text-main)' }}>{wins}W - {losses}L</div>
+          </div>
+          <div style={{ textAlign: 'center', background: 'rgba(255, 255, 255, 0.02)', padding: '12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.05)' }}>
+            <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>Win Rate</div>
+            <div style={{ fontSize: '1.6rem', fontWeight: '800', color: 'var(--neon-indigo)' }}>{winRate}%</div>
+          </div>
+          <div style={{ textAlign: 'center', background: 'rgba(255, 255, 255, 0.02)', padding: '12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.05)' }}>
+            <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>Net P&L</div>
+            <div style={{ fontSize: '1.6rem', fontWeight: '800', color: settledPnL >= 0 ? 'var(--neon-emerald)' : 'var(--neon-rose)' }}>
+              {settledPnL >= 0 ? '+' : ''}${settledPnL.toFixed(2)}
+            </div>
+          </div>
+          <div style={{ textAlign: 'center', background: 'rgba(255, 255, 255, 0.02)', padding: '12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.05)' }}>
+            <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>Current Bankroll</div>
+            <div style={{ fontSize: '1.6rem', fontWeight: '800', color: 'var(--color-text-main)' }}>${currentBankroll.toFixed(2)}</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Parameter Control Card */}
+      <div className="glass-card" style={{ marginBottom: '8px' }}>
+        <div className="card-title">
+          <span>Upcoming Bets Dashboard</span>
+          <span className="badge" style={{ background: 'rgba(16, 185, 129, 0.15)', borderColor: 'var(--neon-emerald)', color: 'var(--neon-emerald)' }}>
+            Edge Finder
+          </span>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '20px', alignItems: 'end' }}>
+
+          <div className="control-group">
+            <label className="control-label" htmlFor="bankroll-input">Initial Bankroll ($)</label>
+            <input
+              id="bankroll-input"
+              type="number"
+              className="select-input"
+              value={initialBankroll}
+              onChange={(e) => setInitialBankroll(Math.max(0, parseFloat(e.target.value) || 0))}
+              disabled={loading || scraping}
+              style={{ width: '100%' }}
+            />
+          </div>
+
+          <div className="control-group">
+            <label className="control-label" htmlFor="edge-input">Minimum Edge (%)</label>
+            <input
+              id="edge-input"
+              type="number"
+              step="0.1"
+              className="select-input"
+              value={minEdgePct}
+              onChange={(e) => setMinEdgePct(Math.max(0, parseFloat(e.target.value) || 0))}
+              disabled={loading || scraping}
+              style={{ width: '100%' }}
+            />
+          </div>
+
+          <div className="control-group">
+            <label className="control-label" htmlFor="market-source-input">Market Odds Source</label>
+            <select
+              id="market-source-input"
+              className="select-input"
+              value={marketSource}
+              onChange={(e) => setMarketSource(e.target.value)}
+              disabled={loading || scraping}
+              style={{ width: '100%' }}
+            >
+              <option value="polymarket">Polymarket Contract Prices</option>
+              <option value="bookie">Traditional Bookmaker (FanDuel / ELO)</option>
+            </select>
+          </div>
+
+          <div className="control-group">
+            <label className="control-label" htmlFor="flat-wager-input">Flat Wager (%)</label>
+            <input
+              id="flat-wager-input"
+              type="number"
+              step="0.5"
+              min="0.1"
+              max="100"
+              className="select-input"
+              value={flatWagerPct}
+              onChange={(e) => setFlatWagerPct(Math.max(0.1, parseFloat(e.target.value) || 0))}
+              disabled={loading || scraping}
+              style={{ width: '100%' }}
+            />
+          </div>
+
+          <div className="control-group">
+            <button
+              onClick={handleScrape}
+              className="select-input"
+              style={{
+                width: '100%',
+                background: 'var(--neon-indigo)',
+                color: '#fff',
+                border: 'none',
+                cursor: 'pointer',
+                fontWeight: '700',
+                padding: '10px 20px',
+                borderRadius: '10px',
+                filter: 'drop-shadow(0 2px 4px rgba(99, 102, 241, 0.3))',
+                opacity: scraping ? 0.7 : 1
+              }}
+              disabled={loading || scraping}
+            >
+              {scraping ? 'Scraping & Predicting...' : 'Scrape Live Polymarket'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {error && <div className="error-alert">{error}</div>}
+
+      {/* Bets Table Card */}
+      <div className="glass-card">
+        <div className="card-title">
+          <span>Active WNBA Markets & Value Bets</span>
+          {bets.length > 0 && <span className="control-label" style={{ fontSize: '0.8rem' }}>{bets.length} Matches Found</span>}
+        </div>
+
+        {loading ? (
+          <div style={{ textAlign: 'center', padding: '40px', color: 'var(--color-text-muted)' }}>
+            Loading predictions & market odds...
+          </div>
+        ) : bets.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '40px', color: 'var(--color-text-muted)' }}>
+            No upcoming match markets found in the database.
+            <br />
+            <span style={{ fontSize: '0.85rem', display: 'block', marginTop: '12px' }}>
+              Click <strong>Scrape Live Polymarket</strong> above to fetch current WNBA matchups.
+            </span>
+          </div>
+        ) : (
+          <div className="table-container">
+            <table className="custom-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Matchup</th>
+                  <th style={{ textAlign: 'center' }}>Model Win Prob (H/A)</th>
+                  <th style={{ textAlign: 'center' }}>{marketSource === 'polymarket' ? 'Polymarket Price (H/A)' : 'Bookmaker Odds (H/A)'}</th>
+                  <th style={{ textAlign: 'center' }}>Recommendation</th>
+                  <th style={{ textAlign: 'right' }}>Suggested Flat Wager ({flatWagerPct}%)</th>
+                  <th style={{ textAlign: 'right' }}>Suggested Kelly Wager</th>
+                  <th style={{ textAlign: 'right' }}>Potential Win (Flat/Kelly)</th>
+                  <th style={{ textAlign: 'right' }}>Potential Loss (Flat/Kelly)</th>
+                  <th style={{ textAlign: 'center' }}>Track Bet</th>
+                  <th style={{ width: '80px' }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {bets.map((bet, idx) => {
+                  // Calculate edges and odds dynamically
+                  const homeModelProb = bet.home_prob / 100;
+                  const awayModelProb = bet.away_prob / 100;
+
+                  const homeMarketProb = marketSource === 'polymarket'
+                    ? bet.home_price
+                    : (bet.bookmaker ? bet.bookmaker.home_implied_prob / 100 : 0.5);
+                  const awayMarketProb = marketSource === 'polymarket'
+                    ? bet.away_price
+                    : (bet.bookmaker ? bet.bookmaker.away_implied_prob / 100 : 0.5);
+
+                  const homeOdds = marketSource === 'polymarket'
+                    ? (bet.home_price > 0 ? 1.0 / bet.home_price : 99.0)
+                    : (bet.bookmaker ? bet.bookmaker.home_odds : 1.90);
+                  const awayOdds = marketSource === 'polymarket'
+                    ? (bet.away_price > 0 ? 1.0 / bet.away_price : 99.0)
+                    : (bet.bookmaker ? bet.bookmaker.away_odds : 1.90);
+
+                  const homeEdge = homeModelProb - homeMarketProb;
+                  const awayEdge = awayModelProb - awayMarketProb;
+
+                  const minEdge = minEdgePct / 100;
+
+                  // Determine if there is a bet, and which side is favored
+                  let suggestedBet = 'No Bet';
+                  let activeEdge = 0;
+                  let activeTeam = '';
+                  let activePrice = 0;
+                  let activeOdds = 1.90;
+                  let isHomeBet = false;
+
+                  if (homeEdge >= minEdge && homeEdge >= awayEdge) {
+                    suggestedBet = 'Home';
+                    activeEdge = homeEdge;
+                    activeTeam = bet.home_team;
+                    activePrice = homeMarketProb;
+                    activeOdds = homeOdds;
+                    isHomeBet = true;
+                  } else if (awayEdge >= minEdge && awayEdge >= homeEdge) {
+                    suggestedBet = 'Away';
+                    activeEdge = awayEdge;
+                    activeTeam = bet.away_team;
+                    activePrice = awayMarketProb;
+                    activeOdds = awayOdds;
+                  }
+
+                  // Suggested wagers
+                  let flatBetSize = 0;
+                  let kellyBetSize = 0;
+                  let kellyPct = 0;
+                  let flatWin = 0;
+                  let flatLoss = 0;
+                  let kellyWin = 0;
+                  let kellyLoss = 0;
+
+                  if (suggestedBet !== 'No Bet') {
+                    // Flat wager is custom percentage of current bankroll
+                    flatBetSize = currentBankroll * (flatWagerPct / 100);
+                    flatLoss = flatBetSize;
+                    flatWin = flatBetSize * (activeOdds - 1.0);
+
+                    // Kelly sizing: f* = (p - price) / (1 - price)
+                    const kellyFraction = (activeEdge) / (1.0 - activePrice);
+                    if (kellyFraction > 0) {
+                      kellyPct = kellyFraction * 100;
+                      kellyBetSize = currentBankroll * kellyFraction;
+                      kellyLoss = kellyBetSize;
+                      kellyWin = kellyBetSize * (activeOdds - 1.0);
+                    }
+                  }
+
+                  const isExpanded = expandedGames[idx] || false;
+
+                  return (
+                    <React.Fragment key={idx}>
+                      <tr>
+                        <td>{bet.date}</td>
+                        <td style={{ fontWeight: '600' }}>
+                          <div>
+                            <span style={{ color: 'var(--color-text-muted)' }}>{bet.away_team_abbr}</span>
+                            <span style={{ margin: '0 8px', color: 'var(--color-text-dim)' }}>@</span>
+                            <span style={{ color: 'var(--color-text-main)' }}>{bet.home_team_abbr}</span>
+                          </div>
+                          {bet.has_happened && bet.home_score !== null && bet.away_score !== null && (
+                            <div style={{ fontSize: '0.75rem', color: 'var(--neon-emerald)', marginTop: '4px' }}>
+                              {bet.home_team_abbr} {bet.home_score} - {bet.away_score} {bet.away_team_abbr}
+                            </div>
+                          )}
+                        </td>
+                        <td style={{ textAlign: 'center' }}>
+                          <span style={{ color: 'var(--neon-indigo)', fontWeight: '600' }}>{bet.home_prob}%</span>
+                          <span style={{ margin: '0 6px', color: 'var(--color-text-dim)' }}>/</span>
+                          <span style={{ color: 'var(--neon-purple)', fontWeight: '600' }}>{bet.away_prob}%</span>
+                        </td>
+                        <td style={{ textAlign: 'center' }}>
+                          {marketSource === 'polymarket' ? (
+                            <>
+                              <span>${bet.home_price.toFixed(2)}</span>
+                              <span style={{ margin: '0 6px', color: 'var(--color-text-dim)' }}>/</span>
+                              <span>${bet.away_price.toFixed(2)}</span>
+                            </>
+                          ) : (
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+                              <div>
+                                <span>{bet.bookmaker?.home_odds ? bet.bookmaker.home_odds.toFixed(2) : '—'}</span>
+                                <span style={{ margin: '0 6px', color: 'var(--color-text-dim)' }}>/</span>
+                                <span>{bet.bookmaker?.away_odds ? bet.bookmaker.away_odds.toFixed(2) : '—'}</span>
+                              </div>
+                              {bet.bookmaker?.is_fanduel ? (
+                                <span style={{
+                                  background: 'rgba(16, 185, 129, 0.15)',
+                                  border: '1px solid var(--neon-emerald)',
+                                  color: 'var(--neon-emerald)',
+                                  padding: '2px 6px',
+                                  borderRadius: '4px',
+                                  fontSize: '0.65rem',
+                                  fontWeight: '600',
+                                  display: 'inline-block'
+                                }}>
+                                  [FanDuel]
+                                </span>
+                              ) : (
+                                <span style={{
+                                  background: 'rgba(255, 255, 255, 0.05)',
+                                  border: '1px solid var(--border-card)',
+                                  color: 'var(--color-text-muted)',
+                                  padding: '2px 6px',
+                                  borderRadius: '4px',
+                                  fontSize: '0.65rem',
+                                  fontWeight: '600',
+                                  display: 'inline-block'
+                                }}>
+                                  [ELO]
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </td>
+                        <td style={{ textAlign: 'center' }}>
+                          {suggestedBet !== 'No Bet' ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+                              <span style={{
+                                background: 'rgba(16, 185, 129, 0.15)',
+                                border: '1px solid var(--neon-emerald)',
+                                color: 'var(--neon-emerald)',
+                                padding: '4px 10px',
+                                borderRadius: '6px',
+                                fontSize: '0.75rem',
+                                fontWeight: '700',
+                                display: 'inline-block',
+                                letterSpacing: '0.05em'
+                              }}>
+                                BET {isHomeBet ? bet.home_team_abbr : bet.away_team_abbr}
+                              </span>
+                              <span style={{ color: 'var(--neon-emerald)', fontSize: '0.75rem', fontWeight: '600' }}>
+                                +{(activeEdge * 100).toFixed(1)}% Edge
+                              </span>
+                            </div>
+                          ) : (
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+                              <span style={{
+                                background: 'rgba(255, 255, 255, 0.03)',
+                                border: '1px solid var(--border-card)',
+                                color: 'var(--color-text-dim)',
+                                padding: '4px 10px',
+                                borderRadius: '6px',
+                                fontSize: '0.75rem',
+                                fontWeight: '600',
+                                display: 'inline-block'
+                              }}>
+                                NO BET
+                              </span>
+                              <span style={{ color: 'var(--color-text-muted)', fontSize: '0.7rem' }}>
+                                Max Edge: {Math.max(homeEdge, awayEdge) > 0 ? `+${(Math.max(homeEdge, awayEdge) * 100).toFixed(1)}%` : `${(Math.max(homeEdge, awayEdge) * 100).toFixed(1)}%`}
+                              </span>
+                            </div>
+                          )}
+                        </td>
+                        <td style={{ textAlign: 'right', fontWeight: '600' }}>
+                          {suggestedBet !== 'No Bet' ? (
+                            <span style={{ color: 'var(--color-text-main)' }}>
+                              ${flatBetSize.toFixed(2)}
+                            </span>
+                          ) : (
+                            <span style={{ color: 'var(--color-text-dim)' }}>—</span>
+                          )}
+                        </td>
+                        <td style={{ textAlign: 'right', fontWeight: '700' }}>
+                          {suggestedBet !== 'No Bet' && kellyBetSize > 0 ? (
+                            <span style={{ color: 'var(--neon-indigo)' }}>
+                              ${kellyBetSize.toFixed(2)} <span style={{ fontSize: '0.75rem', fontWeight: '500', color: 'var(--color-text-muted)' }}>({kellyPct.toFixed(1)}%)</span>
+                            </span>
+                          ) : (
+                            <span style={{ color: 'var(--color-text-dim)' }}>—</span>
+                          )}
+                        </td>
+                        <td style={{ textAlign: 'right', fontWeight: '600' }}>
+                          {suggestedBet !== 'No Bet' ? (
+                            <span style={{ color: 'var(--neon-emerald)' }}>
+                              +${flatWin.toFixed(2)} <span style={{ color: 'var(--color-text-muted)', fontSize: '0.8rem', fontWeight: 'normal' }}>/</span> <span style={{ color: 'var(--neon-indigo)' }}>+${kellyWin.toFixed(2)}</span>
+                            </span>
+                          ) : (
+                            <span style={{ color: 'var(--color-text-dim)' }}>—</span>
+                          )}
+                        </td>
+                        <td style={{ textAlign: 'right', fontWeight: '600' }}>
+                          {suggestedBet !== 'No Bet' ? (
+                            <span style={{ color: 'var(--neon-rose)' }}>
+                              -${flatLoss.toFixed(2)} <span style={{ color: 'var(--color-text-muted)', fontSize: '0.8rem', fontWeight: 'normal' }}>/</span> <span style={{ color: 'var(--neon-purple)' }}>-${kellyLoss.toFixed(2)}</span>
+                            </span>
+                          ) : (
+                            <span style={{ color: 'var(--color-text-dim)' }}>—</span>
+                          )}
+                        </td>
+                        <td style={{ textAlign: 'center', verticalAlign: 'middle' }}>
+                          {!bet.confirmed_bet ? (
+                            suggestedBet === 'No Bet' ? (
+                              <span style={{ color: 'var(--color-text-dim)' }}>—</span>
+                            ) : (
+                              <div style={{ display: 'flex', gap: '6px', justifyContent: 'center' }}>
+                                <button
+                                  onClick={() => handleConfirmBet(bet, 'flat', flatBetSize, activeOdds, isHomeBet ? bet.home_team_abbr : bet.away_team_abbr)}
+                                  className="select-input"
+                                  style={{
+                                    padding: '4px 8px',
+                                    fontSize: '0.7rem',
+                                    fontWeight: '700',
+                                    background: 'var(--neon-emerald)',
+                                    color: '#fff',
+                                    border: 'none',
+                                    borderRadius: '6px',
+                                    cursor: 'pointer'
+                                  }}
+                                >
+                                  Confirm Flat
+                                </button>
+                                <button
+                                  onClick={() => handleConfirmBet(bet, 'kelly', kellyBetSize, activeOdds, isHomeBet ? bet.home_team_abbr : bet.away_team_abbr)}
+                                  className="select-input"
+                                  style={{
+                                    padding: '4px 8px',
+                                    fontSize: '0.7rem',
+                                    fontWeight: '700',
+                                    background: 'var(--neon-indigo)',
+                                    color: '#fff',
+                                    border: 'none',
+                                    borderRadius: '6px',
+                                    cursor: 'pointer'
+                                  }}
+                                  disabled={kellyBetSize <= 0}
+                                >
+                                  Confirm Kelly
+                                </button>
+                              </div>
+                            )
+                          ) : (
+                            // Confirmed bet exists
+                            !bet.has_happened ? (
+                              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+                                <span className="badge" style={{ background: 'rgba(251, 191, 36, 0.15)', borderColor: '#fbbf24', color: '#fbbf24', fontSize: '0.7rem', padding: '2px 6px' }}>
+                                  Pending ({bet.confirmed_bet.wager_type.toUpperCase()})
+                                </span>
+                                <button
+                                  onClick={() => handleDeleteBet(bet)}
+                                  className="select-input"
+                                  style={{
+                                    padding: '2px 6px',
+                                    fontSize: '0.65rem',
+                                    background: 'rgba(244, 63, 94, 0.2)',
+                                    color: 'var(--neon-rose)',
+                                    border: '1px solid var(--neon-rose)',
+                                    borderRadius: '4px',
+                                    cursor: 'pointer'
+                                  }}
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            ) : (
+                              // Confirmed and game played
+                              bet.confirmed_bet.outcome === null ? (
+                                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
+                                  <span style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)', fontWeight: '600' }}>
+                                    Settle ({bet.confirmed_bet.wager_type.toUpperCase()}):
+                                  </span>
+                                  <div style={{ display: 'flex', gap: '4px' }}>
+                                    <button
+                                      onClick={() => handleSettleBet(bet, 'won')}
+                                      className="select-input"
+                                      style={{
+                                        padding: '2px 6px',
+                                        fontSize: '0.65rem',
+                                        fontWeight: '700',
+                                        background: 'var(--neon-emerald)',
+                                        color: '#fff',
+                                        border: 'none',
+                                        borderRadius: '4px',
+                                        cursor: 'pointer'
+                                      }}
+                                    >
+                                      Won (Yes)
+                                    </button>
+                                    <button
+                                      onClick={() => handleSettleBet(bet, 'lost')}
+                                      className="select-input"
+                                      style={{
+                                        padding: '2px 6px',
+                                        fontSize: '0.65rem',
+                                        fontWeight: '700',
+                                        background: 'var(--neon-rose)',
+                                        color: '#fff',
+                                        border: 'none',
+                                        borderRadius: '4px',
+                                        cursor: 'pointer'
+                                      }}
+                                    >
+                                      Lost (No)
+                                    </button>
+                                  </div>
+                                </div>
+                              ) : (
+                                // Settled
+                                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+                                  <span className="badge" style={{
+                                    background: bet.confirmed_bet.outcome === 'won' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(244, 63, 94, 0.15)',
+                                    borderColor: bet.confirmed_bet.outcome === 'won' ? 'var(--neon-emerald)' : 'var(--neon-rose)',
+                                    color: bet.confirmed_bet.outcome === 'won' ? 'var(--neon-emerald)' : 'var(--neon-rose)',
+                                    fontSize: '0.7rem',
+                                    fontWeight: '700',
+                                    padding: '2px 6px'
+                                  }}>
+                                    {bet.confirmed_bet.outcome.toUpperCase()}
+                                  </span>
+                                  <span style={{ fontSize: '0.75rem', fontWeight: '700', color: bet.confirmed_bet.bankroll_change >= 0 ? 'var(--neon-emerald)' : 'var(--neon-rose)' }}>
+                                    {bet.confirmed_bet.bankroll_change >= 0 ? '+' : ''}${bet.confirmed_bet.bankroll_change.toFixed(2)}
+                                  </span>
+                                  <button
+                                    onClick={() => handleDeleteBet(bet)}
+                                    className="select-input"
+                                    style={{
+                                      padding: '2px 6px',
+                                      fontSize: '0.65rem',
+                                      background: 'rgba(255, 255, 255, 0.05)',
+                                      color: 'var(--color-text-muted)',
+                                      border: '1px solid var(--border-card)',
+                                      borderRadius: '4px',
+                                      cursor: 'pointer'
+                                    }}
+                                  >
+                                    Reset
+                                  </button>
+                                </div>
+                              )
+                            )
+                          )}
+                        </td>
+                        <td>
+                          <button
+                            onClick={() => toggleExpand(idx)}
+                            className="select-input"
+                            style={{
+                              padding: '4px 10px',
+                              fontSize: '0.75rem',
+                              cursor: 'pointer',
+                              background: isExpanded ? 'rgba(255,255,255,0.08)' : 'transparent',
+                              border: '1px solid var(--border-card)',
+                              borderRadius: '6px',
+                              color: 'var(--color-text-main)'
+                            }}
+                          >
+                            {isExpanded ? 'Hide Info' : 'Show Info'}
+                          </button>
+                        </td>
+                      </tr>
+
+                      {/* Collapsible details for health & injury impacts */}
+                      {isExpanded && (
+                        <tr>
+                          <td colSpan="11" style={{ background: 'rgba(255, 255, 255, 0.01)', padding: '16px 24px' }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
+
+                              {/* Home Team Health Detail */}
+                              <div style={{ background: 'rgba(0, 0, 0, 0.2)', padding: '16px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.03)' }}>
+                                <div style={{ display: 'flex', justifycontent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                                  <h4 style={{ margin: 0, fontSize: '0.95rem', fontWeight: '700', color: 'var(--color-text-main)' }}>
+                                    {bet.home_team} (Home)
+                                  </h4>
+                                  <span style={{
+                                    fontSize: '0.75rem',
+                                    fontWeight: '700',
+                                    padding: '2px 8px',
+                                    borderRadius: '10px',
+                                    background: bet.home_health?.Injured_Players_Count > 0 ? 'rgba(244, 63, 94, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+                                    color: bet.home_health?.Injured_Players_Count > 0 ? 'var(--neon-rose)' : 'var(--neon-emerald)',
+                                    border: `1px solid ${bet.home_health?.Injured_Players_Count > 0 ? 'var(--neon-rose)' : 'var(--neon-emerald)'}`
+                                  }}>
+                                    {bet.home_health?.Injured_Players_Count} Injured
+                                  </span>
+                                </div>
+
+                                <div className="squad-health-summary" style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '14px', border: 'none', background: 'transparent', padding: 0 }}>
+                                  <div className="health-metric-box" style={{ flex: '1 1 70px', padding: '6px 10px', background: 'rgba(255, 255, 255, 0.02)', borderRadius: '8px' }}>
+                                    <span className="health-metric-label" style={{ fontSize: '0.65rem' }}>Missing USG%</span>
+                                    <span className="health-metric-value" style={{ fontSize: '0.85rem' }}>{(bet.home_health?.Missing_Usage_Pct ?? 0).toFixed(1)}%</span>
+                                  </div>
+                                  <div className="health-metric-box" style={{ flex: '1 1 70px', padding: '6px 10px', background: 'rgba(255, 255, 255, 0.02)', borderRadius: '8px' }}>
+                                    <span className="health-metric-label" style={{ fontSize: '0.65rem' }}>Missing BPM</span>
+                                    <span className="health-metric-value" style={{ fontSize: '0.85rem' }}>{(bet.home_health?.Missing_BPM_Pct ?? 0).toFixed(1)}</span>
+                                  </div>
+                                  <div className="health-metric-box" style={{ flex: '1 1 70px', padding: '6px 10px', background: 'rgba(255, 255, 255, 0.02)', borderRadius: '8px' }}>
+                                    <span className="health-metric-label" style={{ fontSize: '0.65rem' }}>Missing Min%</span>
+                                    <span className="health-metric-value" style={{ fontSize: '0.85rem' }}>{(bet.home_health?.Missing_Minutes_Pct ?? 0).toFixed(1)}%</span>
+                                  </div>
+                                </div>
+
+                                <h5 style={{ fontSize: '0.75rem', textTransform: 'uppercase', color: 'var(--color-text-muted)', marginBottom: '6px', fontWeight: '700' }}>Injured Roster Impact</h5>
+                                {bet.home_injuries.length === 0 ? (
+                                  <div style={{ fontSize: '0.8rem', color: 'var(--color-text-dim)', fontStyle: 'italic' }}>No active roster injuries.</div>
+                                ) : (
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                    {bet.home_injuries.map((player, pIdx) => (
+                                      <div key={pIdx} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 10px', background: 'rgba(244, 63, 94, 0.04)', border: '1px solid rgba(244, 63, 94, 0.1)', borderRadius: '8px', fontSize: '0.8rem' }}>
+                                        <span style={{ fontWeight: '600', color: 'var(--color-text-main)' }}>{player.name}</span>
+                                        <span style={{ color: 'var(--neon-rose)' }}>{player.status || 'Out'} {player.expected_return ? `(Return: ${player.expected_return})` : ''}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* Away Team Health Detail */}
+                              <div style={{ background: 'rgba(0, 0, 0, 0.2)', padding: '16px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.03)' }}>
+                                <div style={{ display: 'flex', justifycontent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                                  <h4 style={{ margin: 0, fontSize: '0.95rem', fontWeight: '700', color: 'var(--color-text-main)' }}>
+                                    {bet.away_team} (Away)
+                                  </h4>
+                                  <span style={{
+                                    fontSize: '0.75rem',
+                                    fontWeight: '700',
+                                    padding: '2px 8px',
+                                    borderRadius: '10px',
+                                    background: bet.away_health?.Injured_Players_Count > 0 ? 'rgba(244, 63, 94, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+                                    color: bet.away_health?.Injured_Players_Count > 0 ? 'var(--neon-rose)' : 'var(--neon-emerald)',
+                                    border: `1px solid ${bet.away_health?.Injured_Players_Count > 0 ? 'var(--neon-rose)' : 'var(--neon-emerald)'}`
+                                  }}>
+                                    {bet.away_health?.Injured_Players_Count} Injured
+                                  </span>
+                                </div>
+
+                                <div className="squad-health-summary" style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '14px', border: 'none', background: 'transparent', padding: 0 }}>
+                                  <div className="health-metric-box" style={{ flex: '1 1 70px', padding: '6px 10px', background: 'rgba(255, 255, 255, 0.02)', borderRadius: '8px' }}>
+                                    <span className="health-metric-label" style={{ fontSize: '0.65rem' }}>Missing USG%</span>
+                                    <span className="health-metric-value" style={{ fontSize: '0.85rem' }}>{(bet.away_health?.Missing_Usage_Pct ?? 0).toFixed(1)}%</span>
+                                  </div>
+                                  <div className="health-metric-box" style={{ flex: '1 1 70px', padding: '6px 10px', background: 'rgba(255, 255, 255, 0.02)', borderRadius: '8px' }}>
+                                    <span className="health-metric-label" style={{ fontSize: '0.65rem' }}>Missing BPM</span>
+                                    <span className="health-metric-value" style={{ fontSize: '0.85rem' }}>{(bet.away_health?.Missing_BPM_Pct ?? 0).toFixed(1)}</span>
+                                  </div>
+                                  <div className="health-metric-box" style={{ flex: '1 1 70px', padding: '6px 10px', background: 'rgba(255, 255, 255, 0.02)', borderRadius: '8px' }}>
+                                    <span className="health-metric-label" style={{ fontSize: '0.65rem' }}>Missing Min%</span>
+                                    <span className="health-metric-value" style={{ fontSize: '0.85rem' }}>{(bet.away_health?.Missing_Minutes_Pct ?? 0).toFixed(1)}%</span>
+                                  </div>
+                                </div>
+
+                                <h5 style={{ fontSize: '0.75rem', textTransform: 'uppercase', color: 'var(--color-text-muted)', marginBottom: '6px', fontWeight: '700' }}>Injured Roster Impact</h5>
+                                {bet.away_injuries.length === 0 ? (
+                                  <div style={{ fontSize: '0.8rem', color: 'var(--color-text-dim)', fontStyle: 'italic' }}>No active roster injuries.</div>
+                                ) : (
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                    {bet.away_injuries.map((player, pIdx) => (
+                                      <div key={pIdx} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 10px', background: 'rgba(244, 63, 94, 0.04)', border: '1px solid rgba(244, 63, 94, 0.1)', borderRadius: '8px', fontSize: '0.8rem' }}>
+                                        <span style={{ fontWeight: '600', color: 'var(--color-text-main)' }}>{player.name}</span>
+                                        <span style={{ color: 'var(--neon-rose)' }}>{player.status || 'Out'} {player.expected_return ? `(Return: ${player.expected_return})` : ''}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

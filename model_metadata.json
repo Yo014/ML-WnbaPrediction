@@ -1,0 +1,173 @@
+{
+    "training_timestamp": "2026-06-21T18:27:54.968624",
+    "features": [
+        "Home_Offensive_Rating_EMA_5",
+        "Home_Defensive_Rating_EMA_5",
+        "Home_Offensive_Rating_EMA_10",
+        "Home_Defensive_Rating_EMA_10",
+        "Away_Offensive_Rating_EMA_5",
+        "Away_Defensive_Rating_EMA_5",
+        "Away_Offensive_Rating_EMA_10",
+        "Away_Defensive_Rating_EMA_10",
+        "Home_Net_Rating_EMA_5",
+        "Away_Net_Rating_EMA_5",
+        "Home_Net_Rating_EMA_10",
+        "Away_Net_Rating_EMA_10",
+        "Home_eFG%_EMA_5",
+        "Home_TOV%_EMA_5",
+        "Home_ORB%_EMA_5",
+        "Home_FT_Rate_EMA_5",
+        "Home_eFG%_EMA_10",
+        "Home_TOV%_EMA_10",
+        "Home_ORB%_EMA_10",
+        "Home_FT_Rate_EMA_10",
+        "Away_eFG%_EMA_5",
+        "Away_TOV%_EMA_5",
+        "Away_ORB%_EMA_5",
+        "Away_FT_Rate_EMA_5",
+        "Away_eFG%_EMA_10",
+        "Away_TOV%_EMA_10",
+        "Away_ORB%_EMA_10",
+        "Away_FT_Rate_EMA_10",
+        "Home_Days_Rest",
+        "Home_Back_To_Back",
+        "Home_Three_In_Four",
+        "Away_Days_Rest",
+        "Away_Back_To_Back",
+        "Away_Three_In_Four",
+        "Rest_Diff",
+        "Ref_Pts_EMA",
+        "Ref_Fouls_EMA",
+        "Ref_HomeWin_EMA",
+        "Home_Talent_Floor",
+        "Away_Talent_Floor",
+        "Talent_Floor_Diff",
+        "BookieHomeOdds",
+        "BookieAwayOdds",
+        "OpeningSpread",
+        "ClosingSpread",
+        "OverUnder",
+        "Prob_Home",
+        "Home_Missing_Usage_Pct",
+        "Away_Missing_Usage_Pct",
+        "Home_Missing_BPM_Pct",
+        "Away_Missing_BPM_Pct",
+        "Home_Missing_Minutes_Pct",
+        "Away_Missing_Minutes_Pct",
+        "Home_Injured_Players_Count",
+        "Away_Injured_Players_Count",
+        "Missing_Usage_Diff",
+        "Net_Rating_Diff_5",
+        "eFG%_Diff_5",
+        "TOV%_Diff_5",
+        "ORB%_Diff_5",
+        "FT_Rate_Diff_5",
+        "Net_Rating_Diff_10",
+        "eFG%_Diff_10",
+        "TOV%_Diff_10",
+        "ORB%_Diff_10",
+        "FT_Rate_Diff_10",
+        "H2H_Bias"
+    ],
+    "best_hyperparameters": {
+        "subsample": 0.6,
+        "reg_lambda": 1.0,
+        "reg_alpha": 0.1,
+        "n_estimators": 50,
+        "min_child_weight": 3,
+        "max_depth": 6,
+        "learning_rate": 0.05,
+        "colsample_bytree": 0.6
+    },
+    "metrics": {
+        "train_mae": 7.145403861999512,
+        "train_r2": 0.5608999729156494,
+        "train_wl_accuracy": 82.35294117647058,
+        "val_mae": 7.615505695343018,
+        "val_r2": 0.5732259750366211,
+        "val_wl_accuracy": 82.55528255528255
+    },
+    "sigma_residuals": 9.696086431597118,
+    "feature_importances": [
+        [
+            "ClosingSpread",
+            0.11049555242061615
+        ],
+        [
+            "Prob_Home",
+            0.047831639647483826
+        ],
+        [
+            "Net_Rating_Diff_10",
+            0.04266338050365448
+        ],
+        [
+            "BookieHomeOdds",
+            0.037974338978528976
+        ],
+        [
+            "Talent_Floor_Diff",
+            0.03624369204044342
+        ],
+        [
+            "BookieAwayOdds",
+            0.029661551117897034
+        ],
+        [
+            "Net_Rating_Diff_5",
+            0.02256562002003193
+        ],
+        [
+            "Away_Net_Rating_EMA_10",
+            0.019327566027641296
+        ],
+        [
+            "Away_Missing_Usage_Pct",
+            0.018155938014388084
+        ],
+        [
+            "Home_Talent_Floor",
+            0.01753571815788746
+        ],
+        [
+            "eFG%_Diff_10",
+            0.016711749136447906
+        ],
+        [
+            "TOV%_Diff_5",
+            0.01586642861366272
+        ],
+        [
+            "FT_Rate_Diff_10",
+            0.01563437655568123
+        ],
+        [
+            "Away_TOV%_EMA_5",
+            0.015628861263394356
+        ],
+        [
+            "Away_TOV%_EMA_10",
+            0.0155513696372509
+        ],
+        [
+            "Away_FT_Rate_EMA_5",
+            0.015391652472317219
+        ],
+        [
+            "Away_Talent_Floor",
+            0.01537327654659748
+        ],
+        [
+            "Home_Defensive_Rating_EMA_10",
+            0.01520560309290886
+        ],
+        [
+            "Home_eFG%_EMA_10",
+            0.015015795826911926
+        ],
+        [
+            "eFG%_Diff_5",
+            0.014850988984107971
+        ]
+    ]
+}

@@ -1,0 +1,1101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WNBA Live Spread & Win Probability Predictor</title>
+  <!-- Google Fonts Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <style>
+    :root {
+      --bg-main: #0b0c15;
+      --bg-card: rgba(22, 23, 38, 0.6);
+      --bg-card-hover: rgba(30, 32, 54, 0.75);
+      --border-card: rgba(255, 255, 255, 0.07);
+      
+      --color-text-main: #f3f4f6;
+      --color-text-muted: #9ca3af;
+      --color-text-dim: #6b7280;
+      
+      --neon-indigo: #6366f1;
+      --neon-purple: #a855f7;
+      --neon-emerald: #10b981;
+      --neon-rose: #f43f5e;
+      --neon-amber: #f59e0b;
+      
+      --glow-indigo: rgba(99, 102, 241, 0.15);
+      --glow-purple: rgba(168, 85, 247, 0.15);
+      --glow-emerald: rgba(16, 185, 129, 0.15);
+      --glow-rose: rgba(244, 63, 94, 0.15);
+      
+      --font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    }
+    
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    
+    body {
+      background-color: var(--bg-main);
+      background-image: 
+        radial-gradient(circle at 10% 20%, rgba(99, 102, 241, 0.06) 0%, transparent 40%),
+        radial-gradient(circle at 90% 80%, rgba(168, 85, 247, 0.06) 0%, transparent 40%);
+      color: var(--color-text-main);
+      font-family: var(--font-family);
+      min-height: 100vh;
+      overflow-x: hidden;
+      padding: 32px 24px;
+      line-height: 1.5;
+    }
+    
+    /* Header section styling */
+    header {
+      max-width: 1400px;
+      margin: 0 auto 32px auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    
+    .brand-container {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 20px;
+    }
+    
+    h1 {
+      font-size: 2rem;
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      background: linear-gradient(135deg, #fff 30%, var(--neon-indigo) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    
+    h1 span.badge {
+      font-size: 0.8rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      background: rgba(99, 102, 241, 0.15);
+      border: 1px solid var(--neon-indigo);
+      -webkit-text-fill-color: var(--neon-indigo);
+      padding: 4px 10px;
+      border-radius: 20px;
+    }
+    
+    .header-controls {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    
+    .control-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    
+    .control-label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--color-text-muted);
+    }
+    
+    .select-input, .date-input {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border-card);
+      color: var(--color-text-main);
+      font-family: var(--font-family);
+      font-size: 0.875rem;
+      font-weight: 500;
+      padding: 10px 16px;
+      border-radius: 10px;
+      outline: none;
+      transition: all 0.2s ease;
+    }
+    
+    .select-input:focus, .date-input:focus {
+      border-color: var(--neon-indigo);
+      box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
+    }
+    
+    /* Dashboard layout */
+    .dashboard-container {
+      max-width: 1400px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 1.2fr 1.8fr;
+      gap: 32px;
+    }
+    
+    @media (max-width: 1150px) {
+      .dashboard-container {
+        grid-template-columns: 1fr;
+      }
+    }
+    
+    /* Card design system */
+    .glass-card {
+      background: var(--bg-card);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--border-card);
+      border-radius: 20px;
+      padding: 24px;
+      box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+      transition: all 0.3s ease;
+    }
+    
+    .glass-card:hover {
+      border-color: rgba(255, 255, 255, 0.12);
+    }
+    
+    .card-title {
+      font-size: 1.125rem;
+      font-weight: 700;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border-card);
+      padding-bottom: 12px;
+    }
+    
+    /* Left column panel layout */
+    .left-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 28px;
+    }
+    
+    /* Matchup selector styles */
+    .matchup-selector-card {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    
+    .team-select-wrapper {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 16px;
+    }
+    
+    .team-select-box {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    
+    .vs-divider {
+      font-size: 0.875rem;
+      font-weight: 800;
+      color: var(--color-text-dim);
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border-card);
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-top: 22px;
+    }
+    
+    /* Hero spread prediction display */
+    .prediction-hero-card {
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+      background: radial-gradient(circle at top right, rgba(99, 102, 241, 0.08) 0%, transparent 60%), var(--bg-card);
+    }
+    
+    .predicted-spread-value {
+      font-size: 3.5rem;
+      font-weight: 800;
+      line-height: 1.1;
+      margin: 10px 0;
+      letter-spacing: -0.04em;
+      color: var(--neon-indigo);
+      text-shadow: 0 0 20px rgba(99, 102, 241, 0.35);
+      transition: all 0.3s ease;
+    }
+    
+    .predicted-spread-desc {
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: var(--color-text-muted);
+      margin-bottom: 24px;
+    }
+    
+    /* Probability gauge progress bar */
+    .probability-gauge-container {
+      margin-top: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    
+    .prob-labels {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.875rem;
+      font-weight: 700;
+    }
+    
+    .prob-team-name {
+      display: flex;
+      flex-direction: column;
+    }
+    
+    .prob-team-name.home {
+      align-items: flex-start;
+      color: var(--neon-emerald);
+    }
+    
+    .prob-team-name.away {
+      align-items: flex-end;
+      color: var(--neon-purple);
+    }
+    
+    .prob-percent {
+      font-size: 1.125rem;
+      font-weight: 800;
+    }
+    
+    .prob-bar-track {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border-card);
+      height: 16px;
+      border-radius: 10px;
+      overflow: hidden;
+      position: relative;
+    }
+    
+    .prob-bar-fill {
+      height: 100%;
+      width: 50%;
+      background: linear-gradient(to right, var(--neon-emerald), var(--neon-indigo), var(--neon-purple));
+      transition: width 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    
+    /* Stats grid details */
+    .detail-section {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    
+    .detail-section-title {
+      font-size: 0.875rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--color-text-muted);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      padding-bottom: 6px;
+    }
+    
+    .info-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    
+    .info-item {
+      background: rgba(255, 255, 255, 0.015);
+      border: 1px solid rgba(255, 255, 255, 0.03);
+      border-radius: 12px;
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    
+    .info-label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--color-text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    
+    .info-value {
+      font-size: 1rem;
+      font-weight: 700;
+    }
+    
+    .info-value.emerald { color: var(--neon-emerald); }
+    .info-value.purple { color: var(--neon-purple); }
+    .info-value.indigo { color: var(--neon-indigo); }
+    
+    /* Right column panels (rosters) */
+    .right-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 28px;
+    }
+    
+    .roster-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+    }
+    
+    @media (max-width: 768px) {
+      .roster-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+    
+    .roster-card {
+      display: flex;
+      flex-direction: column;
+      height: 640px;
+    }
+    
+    .roster-header-info {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+    
+    .team-badge {
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 4px 8px;
+      border-radius: 6px;
+    }
+    
+    .team-badge.home {
+      background: rgba(16, 185, 129, 0.1);
+      border: 1px solid var(--neon-emerald);
+      color: var(--neon-emerald);
+    }
+    
+    .team-badge.away {
+      background: rgba(168, 85, 247, 0.1);
+      border: 1px solid var(--neon-purple);
+      color: var(--neon-purple);
+    }
+    
+    /* Squad health details inside roster panel */
+    .squad-health-summary {
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid rgba(255, 255, 255, 0.04);
+      border-radius: 12px;
+      padding: 12px;
+      margin-bottom: 16px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    
+    .health-metric-box {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    
+    .health-metric-label {
+      font-size: 0.675rem;
+      font-weight: 600;
+      color: var(--color-text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    
+    .health-metric-value {
+      font-size: 0.875rem;
+      font-weight: 700;
+    }
+    
+    .health-metric-value.impact {
+      color: var(--neon-rose);
+    }
+    
+    /* Player list container */
+    .player-list {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding-right: 4px;
+    }
+    
+    /* Sleek scrollbars for lists */
+    .player-list::-webkit-scrollbar {
+      width: 5px;
+    }
+    .player-list::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .player-list::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 4px;
+    }
+    .player-list::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.16);
+    }
+    
+    /* Player item card styling */
+    .player-card {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 14px;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid rgba(255, 255, 255, 0.03);
+      border-radius: 12px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      user-select: none;
+    }
+    
+    .player-card:hover {
+      background: rgba(255, 255, 255, 0.05);
+      border-color: rgba(255, 255, 255, 0.06);
+    }
+    
+    .player-card.checked-injured {
+      background: rgba(244, 63, 94, 0.05);
+      border-color: rgba(244, 63, 94, 0.25);
+    }
+    
+    .player-card.checked-injured:hover {
+      background: rgba(244, 63, 94, 0.08);
+    }
+    
+    /* Custom glassmorphic checkbox */
+    .checkbox-custom {
+      appearance: none;
+      -webkit-appearance: none;
+      width: 18px;
+      height: 18px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border-card);
+      border-radius: 5px;
+      cursor: pointer;
+      display: grid;
+      place-content: center;
+      transition: all 0.2s ease;
+      flex-shrink: 0;
+    }
+    
+    .checkbox-custom::before {
+      content: "";
+      width: 10px;
+      height: 10px;
+      transform: scale(0);
+      background-color: var(--neon-rose);
+      clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+      transition: 0.12s transform ease-in-out;
+      transform-origin: center;
+    }
+    
+    .checkbox-custom:checked {
+      border-color: var(--neon-rose);
+      background: rgba(244, 63, 94, 0.1);
+    }
+    
+    .checkbox-custom:checked::before {
+      transform: scale(1);
+    }
+    
+    .player-info {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+    
+    .player-name {
+      font-size: 0.875rem;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    
+    .player-sub {
+      font-size: 0.75rem;
+      color: var(--color-text-dim);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    
+    .player-stats-pill {
+      font-size: 0.7rem;
+      font-weight: 700;
+      padding: 1px 6px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 4px;
+      color: var(--color-text-muted);
+    }
+    
+    .player-stats-pill.positive-bpm {
+      color: var(--neon-emerald);
+      background: rgba(16, 185, 129, 0.05);
+      border-color: rgba(16, 185, 129, 0.1);
+    }
+    
+    .player-stats-pill.negative-bpm {
+      color: var(--neon-rose);
+      background: rgba(244, 63, 94, 0.05);
+      border-color: rgba(244, 63, 94, 0.1);
+    }
+    
+    .injury-tag {
+      font-size: 0.675rem;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+    }
+    
+    .injury-tag.out {
+      background: rgba(244, 63, 94, 0.15);
+      color: var(--neon-rose);
+      border: 1px solid var(--neon-rose);
+    }
+    
+    .injury-tag.questionable {
+      background: rgba(245, 158, 11, 0.15);
+      color: var(--neon-amber);
+      border: 1px solid var(--neon-amber);
+    }
+    
+    /* Toast/Error Alert styling */
+    .error-alert {
+      background: rgba(244, 63, 94, 0.1);
+      border: 1px solid var(--neon-rose);
+      color: var(--neon-rose);
+      padding: 12px 18px;
+      border-radius: 12px;
+      font-weight: 500;
+      font-size: 0.875rem;
+      margin-bottom: 24px;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand-container">
+      <h1>WNBA Live Matchup Spread Predictor <span class="badge">XGBoost ML</span></h1>
+      
+      <div class="header-controls">
+        <div class="control-group">
+          <label class="control-label" for="matchup-date">Matchup Date</label>
+          <input type="date" id="matchup-date" class="date-input" value="2026-06-15">
+        </div>
+        
+        <div class="control-group">
+          <label class="control-label" for="crew-chief">Crew Chief</label>
+          <select id="crew-chief" class="select-input">
+            <option value="None">Global Average</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  </header>
+  
+  <div class="dashboard-container">
+    <!-- Left Column: Prediction Info & Market stats -->
+    <div class="left-panel">
+      <!-- Error Display -->
+      <div id="error-alert" class="error-alert"></div>
+      
+      <!-- Matchup Selector -->
+      <div class="glass-card matchup-selector-card">
+        <div class="team-select-wrapper">
+          <div class="team-select-box">
+            <label class="control-label" for="home-team-select">Home Team</label>
+            <select id="home-team-select" class="select-input">
+              <!-- Dynamically populated -->
+            </select>
+          </div>
+          
+          <div class="vs-divider">VS</div>
+          
+          <div class="team-select-box">
+            <label class="control-label" for="away-team-select">Away Team</label>
+            <select id="away-team-select" class="select-input">
+              <!-- Dynamically populated -->
+            </select>
+          </div>
+        </div>
+      </div>
+      
+      <!-- prediction hero display -->
+      <div class="glass-card prediction-hero-card">
+        <div class="control-label">Expected Spread (Home - Away)</div>
+        <div id="predicted-spread" class="predicted-spread-value">0.0</div>
+        <div id="predicted-spread-text" class="predicted-spread-desc">Select teams to compute live spread.</div>
+        
+        <div class="probability-gauge-container">
+          <div class="prob-labels">
+            <div class="prob-team-name home">
+              <span id="prob-home-name">HOME</span>
+              <span id="prob-home-val" class="prob-percent">50.0%</span>
+            </div>
+            <div class="prob-team-name away">
+              <span id="prob-away-name">AWAY</span>
+              <span id="prob-away-val" class="prob-percent">50.0%</span>
+            </div>
+          </div>
+          <div class="prob-bar-track">
+            <div id="prob-bar-fill" class="prob-bar-fill"></div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Betting Odds & Bookie Comparison -->
+      <div class="glass-card">
+        <div class="card-title">Market Odds & ELO Implied</div>
+        <div class="detail-section">
+          <div class="info-grid">
+            <div class="info-item">
+              <span class="info-label">Bookie ML Home / Away</span>
+              <span id="odds-bookie-ml" class="info-value">1.90 / 1.90</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">Bookie Implied Home Prob</span>
+              <span id="odds-implied-prob" class="info-value">50.0%</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">Market Closing Spread</span>
+              <span id="odds-closing-spread" class="info-value">0.0</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">Market Opening Spread</span>
+              <span id="odds-opening-spread" class="info-value">0.0</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">Over / Under Line</span>
+              <span id="odds-over-under" class="info-value">160.0</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">Rest Days Difference</span>
+              <span id="odds-rest-diff" class="info-value">0 days</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Matchup Differentials & Performance Details -->
+      <div class="glass-card">
+        <div class="card-title">Matchup Performance Details</div>
+        <div class="detail-section">
+          <div class="info-grid">
+            <div class="info-item">
+              <span class="info-label">Talent Floor Diff</span>
+              <span id="diff-talent-floor" class="info-value">0.0</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">H2H Historical Bias</span>
+              <span id="diff-h2h-bias" class="info-value">50.0%</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">Net Rating Diff (EMA 5)</span>
+              <span id="diff-net-rating-5" class="info-value">0.0</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">Net Rating Diff (EMA 10)</span>
+              <span id="diff-net-rating-10" class="info-value">0.0</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Right Column: Rosters & Injury Selectors -->
+    <div class="right-panel">
+      <div class="roster-grid">
+        <!-- Home Team Roster Card -->
+        <div class="glass-card roster-card">
+          <div class="roster-header-info">
+            <h3 id="home-team-header">Home Team</h3>
+            <span class="team-badge home">Home</span>
+          </div>
+          
+          <div class="squad-health-summary">
+            <div class="health-metric-box">
+              <span class="health-metric-label">Missing USG%</span>
+              <span id="home-health-usg" class="health-metric-value">0.0%</span>
+            </div>
+            <div class="health-metric-box">
+              <span class="health-metric-label">Missing BPM</span>
+              <span id="home-health-bpm" class="health-metric-value">0.0</span>
+            </div>
+            <div class="health-metric-box">
+              <span class="health-metric-label">Missing Min%</span>
+              <span id="home-health-min" class="health-metric-value">0.0%</span>
+            </div>
+            <div class="health-metric-box">
+              <span class="health-metric-label">Injured Count</span>
+              <span id="home-health-count" class="health-metric-value impact">0</span>
+            </div>
+          </div>
+          
+          <div id="home-player-list" class="player-list">
+            <!-- Dynamic roster content -->
+          </div>
+        </div>
+        
+        <!-- Away Team Roster Card -->
+        <div class="glass-card roster-card">
+          <div class="roster-header-info">
+            <h3 id="away-team-header">Away Team</h3>
+            <span class="team-badge away">Away</span>
+          </div>
+          
+          <div class="squad-health-summary">
+            <div class="health-metric-box">
+              <span class="health-metric-label">Missing USG%</span>
+              <span id="away-health-usg" class="health-metric-value">0.0%</span>
+            </div>
+            <div class="health-metric-box">
+              <span class="health-metric-label">Missing BPM</span>
+              <span id="away-health-bpm" class="health-metric-value">0.0</span>
+            </div>
+            <div class="health-metric-box">
+              <span class="health-metric-label">Missing Min%</span>
+              <span id="away-health-min" class="health-metric-value">0.0%</span>
+            </div>
+            <div class="health-metric-box">
+              <span class="health-metric-label">Injured Count</span>
+              <span id="away-health-count" class="health-metric-value impact">0</span>
+            </div>
+          </div>
+          
+          <div id="away-player-list" class="player-list">
+            <!-- Dynamic roster content -->
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <script>
+    // State management
+    let teamsList = [];
+    let homeRoster = [];
+    let awayRoster = [];
+    
+    // Elements Cache
+    const homeTeamSelect = document.getElementById('home-team-select');
+    const awayTeamSelect = document.getElementById('away-team-select');
+    const crewChiefSelect = document.getElementById('crew-chief');
+    const matchupDateInput = document.getElementById('matchup-date');
+    const errorAlert = document.getElementById('error-alert');
+    
+    // Initialize Dashboard
+    async function init() {
+      try {
+        // Fetch teams
+        const responseTeams = await fetch('/api/teams');
+        teamsList = await responseTeams.json();
+        
+        // Fetch crew chiefs
+        const responseRefs = await fetch('/api/crew_chiefs');
+        const refs = await responseRefs.json();
+        
+        // Populate Crew Chiefs
+        refs.forEach(ref => {
+          const option = document.createElement('option');
+          option.value = ref;
+          option.textContent = ref;
+          crewChiefSelect.appendChild(option);
+        });
+        
+        // Populate Teams
+        teamsList.forEach((team, idx) => {
+          const optionHome = document.createElement('option');
+          optionHome.value = team;
+          optionHome.textContent = team;
+          homeTeamSelect.appendChild(optionHome);
+          
+          const optionAway = document.createElement('option');
+          optionAway.value = team;
+          optionAway.textContent = team;
+          awayTeamSelect.appendChild(optionAway);
+        });
+        
+        // Defaults: Home = Las Vegas Aces, Away = New York Liberty (if they exist)
+        const defHome = teamsList.includes('Las Vegas Aces') ? 'Las Vegas Aces' : teamsList[0];
+        let defAway = teamsList.includes('New York Liberty') ? 'New York Liberty' : teamsList[1];
+        if (defHome === defAway) {
+          defAway = teamsList[teamsList.length - 1];
+        }
+        
+        homeTeamSelect.value = defHome;
+        awayTeamSelect.value = defAway;
+        
+        // Load rosters and run first prediction
+        await reloadRosters();
+        
+      } catch (err) {
+        showError("Failed to initialize dashboard parameters: " + err.message);
+      }
+    }
+    
+    // Show error helper
+    function showError(msg) {
+      if (msg) {
+        errorAlert.textContent = msg;
+        errorAlert.style.display = 'block';
+      } else {
+        errorAlert.style.display = 'none';
+      }
+    }
+    
+    // Reload Rosters for both teams
+    async function reloadRosters() {
+      const homeTeam = homeTeamSelect.value;
+      const awayTeam = awayTeamSelect.value;
+      
+      showError(null);
+      
+      if (homeTeam === awayTeam) {
+        showError("Home team and Away team must be different.");
+        return;
+      }
+      
+      try {
+        // Update header team names
+        document.getElementById('home-team-header').textContent = homeTeam;
+        document.getElementById('away-team-header').textContent = awayTeam;
+        
+        // Fetch Home Roster
+        const homeRes = await fetch(`/api/roster/${encodeURIComponent(homeTeam)}`);
+        homeRoster = await homeRes.json();
+        
+        // Fetch Away Roster
+        const awayRes = await fetch(`/api/roster/${encodeURIComponent(awayTeam)}`);
+        awayRoster = await awayRes.json();
+        
+        // Render
+        renderRoster(homeRoster, 'home-player-list', 'home');
+        renderRoster(awayRoster, 'away-player-list', 'away');
+        
+        // Trigger live prediction
+        await updatePrediction();
+        
+      } catch (err) {
+        showError("Error loading team rosters: " + err.message);
+      }
+    }
+    
+    // Render roster to HTML
+    function renderRoster(roster, containerId, teamType) {
+      const container = document.getElementById(containerId);
+      container.innerHTML = '';
+      
+      roster.forEach(player => {
+        const card = document.createElement('div');
+        card.className = `player-card ${player.injured ? 'checked-injured' : ''}`;
+        card.dataset.name = player.name;
+        card.dataset.team = teamType;
+        
+        // Pre-configure content
+        const minVal = player.min.toFixed(1);
+        const usgVal = (player.usg_pct * 100).toFixed(1);
+        const bpmVal = player.bpm.toFixed(1);
+        
+        const bpmClass = player.bpm >= 0 ? 'positive-bpm' : 'negative-bpm';
+        const bpmSign = player.bpm > 0 ? '+' : '';
+        
+        let injuryBadge = '';
+        if (player.injured) {
+          const statusClass = (player.injury_status || '').toLowerCase() === 'out' ? 'out' : 'questionable';
+          injuryBadge = `<span class="injury-tag ${statusClass}">${player.injury_status || 'OUT'}</span>`;
+        }
+        
+        card.innerHTML = `
+          <input type="checkbox" class="checkbox-custom" ${player.injured ? 'checked' : ''}>
+          <div class="player-info">
+            <div class="player-name">${player.name}</div>
+            <div class="player-sub">
+              <span class="player-stats-pill">${minVal} MPG</span>
+              <span class="player-stats-pill">${usgVal}% USG</span>
+              <span class="player-stats-pill ${bpmClass}">${bpmSign}${bpmVal} BPM</span>
+              ${injuryBadge}
+            </div>
+          </div>
+        `;
+        
+        // Event listeners
+        const checkbox = card.querySelector('.checkbox-custom');
+        
+        // Prevent event double-firing
+        checkbox.addEventListener('click', (e) => {
+          e.stopPropagation();
+          player.injured = checkbox.checked;
+          card.classList.toggle('checked-injured', player.injured);
+          updatePrediction();
+        });
+        
+        card.addEventListener('click', () => {
+          checkbox.checked = !checkbox.checked;
+          player.injured = checkbox.checked;
+          card.classList.toggle('checked-injured', player.injured);
+          updatePrediction();
+        });
+        
+        container.appendChild(card);
+      });
+    }
+    
+    // Call Predict API
+    async function updatePrediction() {
+      const homeTeam = homeTeamSelect.value;
+      const awayTeam = awayTeamSelect.value;
+      const crewChief = crewChiefSelect.value;
+      const predictionDate = matchupDateInput.value;
+      
+      if (homeTeam === awayTeam) {
+        return;
+      }
+      
+      showError(null);
+      
+      // Collect injured player names
+      const homeInjuredList = homeRoster.filter(p => p.injured).map(p => p.name);
+      const awayInjuredList = awayRoster.filter(p => p.injured).map(p => p.name);
+      
+      try {
+        const response = await fetch('/predict', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            home_team: homeTeam,
+            away_team: awayTeam,
+            crew_chief: crewChief,
+            prediction_date: predictionDate,
+            home_injured_players: homeInjuredList,
+            away_injured_players: awayInjuredList
+          })
+        });
+        
+        const result = await response.json();
+        
+        if (result.error) {
+          showError(result.error);
+          return;
+        }
+        
+        // 1. Update Hero predicted spread
+        const spreadVal = result.predicted_spread;
+        const formattedSpread = spreadVal > 0 ? `+${spreadVal}` : `${spreadVal}`;
+        document.getElementById('predicted-spread').textContent = formattedSpread;
+        
+        // Visual description text
+        let desc = '';
+        if (spreadVal > 0) {
+          desc = `${homeTeam} is favored to win by ${spreadVal.toFixed(1)} points at home.`;
+          document.getElementById('predicted-spread').style.color = 'var(--neon-emerald)';
+          document.getElementById('predicted-spread').style.textShadow = '0 0 20px rgba(16, 185, 129, 0.35)';
+        } else if (spreadVal < 0) {
+          desc = `${awayTeam} is favored to win by ${Math.abs(spreadVal).toFixed(1)} points on the road.`;
+          document.getElementById('predicted-spread').style.color = 'var(--neon-rose)';
+          document.getElementById('predicted-spread').style.textShadow = '0 0 20px rgba(244, 63, 94, 0.35)';
+        } else {
+          desc = `The matchup is projected to be a perfect draw (spread margin: 0.0).`;
+          document.getElementById('predicted-spread').style.color = 'var(--neon-indigo)';
+          document.getElementById('predicted-spread').style.textShadow = '0 0 20px rgba(99, 102, 241, 0.35)';
+        }
+        document.getElementById('predicted-spread-text').textContent = desc;
+        
+        // 2. Update Probability progress gauge
+        const homeProb = result.home_win_probability;
+        const awayProb = result.away_win_probability;
+        
+        document.getElementById('prob-home-name').textContent = homeTeam.toUpperCase();
+        document.getElementById('prob-away-name').textContent = awayTeam.toUpperCase();
+        document.getElementById('prob-home-val').textContent = `${homeProb.toFixed(1)}%`;
+        document.getElementById('prob-away-val').textContent = `${awayProb.toFixed(1)}%`;
+        
+        document.getElementById('prob-bar-fill').style.width = `${homeProb}%`;
+        
+        // 3. Update Recalculated Health Metrics
+        const hh = result.home_health;
+        const ah = result.away_health;
+        
+        document.getElementById('home-health-usg').textContent = `${hh.Missing_Usage_Pct.toFixed(1)}%`;
+        document.getElementById('home-health-bpm').textContent = `${hh.Missing_BPM_Pct.toFixed(1)}`;
+        document.getElementById('home-health-min').textContent = `${hh.Missing_Minutes_Pct.toFixed(1)}%`;
+        document.getElementById('home-health-count').textContent = hh.Injured_Players_Count;
+        
+        document.getElementById('away-health-usg').textContent = `${ah.Missing_Usage_Pct.toFixed(1)}%`;
+        document.getElementById('away-health-bpm').textContent = `${ah.Missing_BPM_Pct.toFixed(1)}`;
+        document.getElementById('away-health-min').textContent = `${ah.Missing_Minutes_Pct.toFixed(1)}%`;
+        document.getElementById('away-health-count').textContent = ah.Injured_Players_Count;
+        
+        // Adjust colors of counts if they are > 0
+        document.getElementById('home-health-count').style.color = hh.Injured_Players_Count > 0 ? 'var(--neon-rose)' : 'var(--color-text-main)';
+        document.getElementById('away-health-count').style.color = ah.Injured_Players_Count > 0 ? 'var(--neon-rose)' : 'var(--color-text-main)';
+        
+        // 4. Update Betting Odds & Bookie Comparison
+        const odds = result.odds;
+        document.getElementById('odds-bookie-ml').textContent = `${odds.bookie_home_odds.toFixed(2)} / ${odds.bookie_away_odds.toFixed(2)}`;
+        document.getElementById('odds-implied-prob').textContent = `${odds.implied_prob_home.toFixed(1)}%`;
+        document.getElementById('odds-closing-spread').textContent = odds.closing_spread > 0 ? `+${odds.closing_spread.toFixed(1)}` : odds.closing_spread.toFixed(1);
+        document.getElementById('odds-opening-spread').textContent = odds.opening_spread > 0 ? `+${odds.opening_spread.toFixed(1)}` : odds.opening_spread.toFixed(1);
+        document.getElementById('odds-over-under').textContent = odds.over_under.toFixed(1);
+        
+        const diffs = result.differentials;
+        document.getElementById('odds-rest-diff').textContent = `${diffs.rest_diff > 0 ? '+' : ''}${diffs.rest_diff} days`;
+        
+        // 5. Update Matchup Performance Details
+        document.getElementById('diff-talent-floor').textContent = `${diffs.talent_floor_diff > 0 ? '+' : ''}${diffs.talent_floor_diff.toFixed(1)}`;
+        document.getElementById('diff-talent-floor').className = `info-value ${diffs.talent_floor_diff > 0 ? 'emerald' : (diffs.talent_floor_diff < 0 ? 'rose' : '')}`;
+        
+        document.getElementById('diff-h2h-bias').textContent = `${diffs.h2h_bias.toFixed(1)}%`;
+        
+        document.getElementById('diff-net-rating-5').textContent = `${diffs.net_rating_diff_5 > 0 ? '+' : ''}${diffs.net_rating_diff_5.toFixed(1)}`;
+        document.getElementById('diff-net-rating-5').className = `info-value ${diffs.net_rating_diff_5 > 0 ? 'emerald' : (diffs.net_rating_diff_5 < 0 ? 'rose' : '')}`;
+        
+        document.getElementById('diff-net-rating-10').textContent = `${diffs.net_rating_diff_10 > 0 ? '+' : ''}${diffs.net_rating_diff_10.toFixed(1)}`;
+        document.getElementById('diff-net-rating-10').className = `info-value ${diffs.net_rating_diff_10 > 0 ? 'emerald' : (diffs.net_rating_diff_10 < 0 ? 'rose' : '')}`;
+        
+      } catch (err) {
+        showError("Prediction server returned an error: " + err.message);
+      }
+    }
+    
+    // Bind Event Listeners
+    homeTeamSelect.addEventListener('change', reloadRosters);
+    awayTeamSelect.addEventListener('change', reloadRosters);
+    crewChiefSelect.addEventListener('change', updatePrediction);
+    matchupDateInput.addEventListener('change', updatePrediction);
+    
+    // Run Init
+    window.onload = init;
+  </script>
+</body>
+</html>

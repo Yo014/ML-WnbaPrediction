@@ -1,0 +1,342 @@
+import sqlite3
+import pandas as pd
+import numpy as np
+from db_manager import DB_NAME, get_connection
+
+def calculate_talent_floors(conn):
+    """
+    Computes the Talent Floor for each team-season as the sum of
+    the previous-season Win Shares of players on the roster.
+    """
+    # Load player stats
+    df_players = pd.read_sql_query("SELECT Season, Player, Team, WS FROM player_stats", conn)
+    
+    # Aggregate player WS by Player and Season (in case of trades or duplicate listings)
+    player_ws = df_players.groupby(['Player', 'Season'])['WS'].sum().reset_index()
+    player_ws_dict = {(row['Player'], row['Season']): row['WS'] for _, row in player_ws.iterrows()}
+    
+    # Calculate Talent Floor for each team-season
+    talent_floors = []
+    for (team, season), group in df_players.groupby(['Team', 'Season']):
+        prev_season = season - 1
+        sum_prev_ws = 0.0
+        for player in group['Player'].unique():
+            # Get the player's Win Shares from the previous season
+            prev_ws = player_ws_dict.get((player, prev_season), 0.0)
+            sum_prev_ws += prev_ws
+        talent_floors.append({
+            'Team': team,
+            'Season': season,
+            'Talent_Floor': round(sum_prev_ws, 2)
+        })
+    return pd.DataFrame(talent_floors)
+
+def calculate_referee_stats(df_matches):
+    """
+    Calculates rolling EMA (span=20, shifted by 1) of Crew Chief officiating statistics:
+    - Average total points scored in games officiated.
+    - Average personal fouls called per game.
+    - Crew chief historical home team win percentage.
+    """
+    # Sort matches chronologically to ensure no future information leaks
+    df_matches = df_matches.sort_values('Date').reset_index(drop=True)
+    
+    # Calculate game-level referee metrics
+    df_matches['Game_Total_Points'] = df_matches['HomeScore'] + df_matches['AwayScore']
+    df_matches['Game_Total_Fouls'] = df_matches['HomePF'] + df_matches['AwayPF']
+    df_matches['Game_Home_Win'] = (df_matches['HomeScore'] > df_matches['AwayScore']).astype(float)
+    
+    # Group by CrewChief
+    ref_groups = df_matches.groupby('CrewChief')
+    
+    # Create target columns
+    df_matches['Ref_Pts_EMA'] = np.nan
+    df_matches['Ref_Fouls_EMA'] = np.nan
+    df_matches['Ref_HomeWin_EMA'] = np.nan
+    
+    # Compute EMA span=20, shifted by 1 to prevent data leakage
+    for chief, group in ref_groups:
+        idx = group.index
+        # Compute EWM on the chief's games
+        pts_ema = group['Game_Total_Points'].ewm(span=20, adjust=False).mean().shift(1)
+        fouls_ema = group['Game_Total_Fouls'].ewm(span=20, adjust=False).mean().shift(1)
+        homewin_ema = group['Game_Home_Win'].ewm(span=20, adjust=False).mean().shift(1)
+        
+        df_matches.loc[idx, 'Ref_Pts_EMA'] = pts_ema
+        df_matches.loc[idx, 'Ref_Fouls_EMA'] = fouls_ema
+        df_matches.loc[idx, 'Ref_HomeWin_EMA'] = homewin_ema
+        
+    # Global fallbacks for Crew Chiefs officiating their first games (no history)
+    global_mean_pts = df_matches['Game_Total_Points'].mean()
+    global_mean_fouls = df_matches['Game_Total_Fouls'].mean()
+    global_mean_homewin = df_matches['Game_Home_Win'].mean()
+    
+    df_matches['Ref_Pts_EMA'] = df_matches['Ref_Pts_EMA'].fillna(global_mean_pts)
+    df_matches['Ref_Fouls_EMA'] = df_matches['Ref_Fouls_EMA'].fillna(global_mean_fouls)
+    df_matches['Ref_HomeWin_EMA'] = df_matches['Ref_HomeWin_EMA'].fillna(global_mean_homewin)
+    
+    # Drop intermediate columns
+    df_matches = df_matches.drop(columns=['Game_Total_Points', 'Game_Total_Fouls', 'Game_Home_Win'])
+    return df_matches
+
+def calculate_h2h_bias(df_matches):
+    """
+    Computes Head-to-Head (H2H) Bias: Home team win rate against this specific away team
+    over the last 2 seasons (current and previous season) prior to the match date.
+    """
+    h2h_win_rates = []
+    
+    # Sort chronologically to prevent any potential leakage
+    df_matches = df_matches.sort_values('Date').reset_index(drop=True)
+    
+    for idx, row in df_matches.iterrows():
+        h = row['HomeTeam']
+        a = row['AwayTeam']
+        d = row['Date']
+        s = int(d[:4])
+        
+        # Historical matches in the last 2 seasons (season >= s - 1) before current date d
+        cond_h_home = (df_matches['HomeTeam'] == h) & (df_matches['AwayTeam'] == a) & (df_matches['Date'] < d) & (df_matches['Date'].str[:4].astype(int) >= s - 1)
+        cond_h_away = (df_matches['HomeTeam'] == a) & (df_matches['AwayTeam'] == h) & (df_matches['Date'] < d) & (df_matches['Date'].str[:4].astype(int) >= s - 1)
+        
+        prev_home = df_matches[cond_h_home]
+        prev_away = df_matches[cond_h_away]
+        
+        total_games = len(prev_home) + len(prev_away)
+        if total_games == 0:
+            win_rate = 0.5  # Neutral default when no prior meetings
+        else:
+            wins_home = (prev_home['HomeScore'] > prev_home['AwayScore']).sum()
+            wins_away = (prev_away['AwayScore'] > prev_away['HomeScore']).sum()
+            win_rate = (wins_home + wins_away) / total_games
+            
+        h2h_win_rates.append(win_rate)
+        
+    df_matches['H2H_Bias'] = h2h_win_rates
+    return df_matches
+
+def main():
+    print("Connecting to database to load matches...")
+    conn = get_connection()
+    df_matches = pd.read_sql_query("SELECT * FROM raw_matches", conn)
+    
+    # Parse Date and add Season
+    df_matches['Season'] = df_matches['Date'].str[:4].astype(int)
+    
+    # 1. Melt matches to team games long format
+    print("Constructing team-game long format for rolling calculations...")
+    team_games = []
+    for idx, row in df_matches.iterrows():
+        # Home team record
+        team_games.append({
+            'Match_Id': row['id'],
+            'Date': row['Date'],
+            'Season': row['Season'],
+            'Team': row['HomeTeam'],
+            'Opponent': row['AwayTeam'],
+            'Role': 'Home',
+            'PtsScored': row['HomePtsScored'],
+            'PtsConceded': row['HomePtsConceded'],
+            'Possessions': row['HomePossessions'],
+            'FGA': row['HomeFGA'],
+            'FTA': row['HomeFTA'],
+            'OREB': row['HomeOREB'],
+            'TOV': row['HomeTOV'],
+            'FGM': row['HomeFGM'],
+            'FG3M': row['HomeFG3M'],
+            'FTM': row['HomeFTM'],
+            'DREB': row['HomeDREB'],
+            'PF': row['HomePF'],
+            'Opp_DREB': row['AwayDREB']
+        })
+        # Away team record
+        team_games.append({
+            'Match_Id': row['id'],
+            'Date': row['Date'],
+            'Season': row['Season'],
+            'Team': row['AwayTeam'],
+            'Opponent': row['HomeTeam'],
+            'Role': 'Away',
+            'PtsScored': row['AwayPtsScored'],
+            'PtsConceded': row['AwayPtsConceded'],
+            'Possessions': row['AwayPossessions'],
+            'FGA': row['AwayFGA'],
+            'FTA': row['AwayFTA'],
+            'OREB': row['AwayOREB'],
+            'TOV': row['AwayTOV'],
+            'FGM': row['AwayFGM'],
+            'FG3M': row['AwayFG3M'],
+            'FTM': row['AwayFTM'],
+            'DREB': row['AwayDREB'],
+            'PF': row['AwayPF'],
+            'Opp_DREB': row['HomeDREB']
+        })
+    df_team_games = pd.DataFrame(team_games)
+    
+    # Sort chronologically by team and season
+    df_team_games = df_team_games.sort_values(['Team', 'Season', 'Date']).reset_index(drop=True)
+    
+    # Calculate game-level rate metrics
+    print("Calculating team game-level rating and four factors metrics...")
+    df_team_games['Offensive_Rating'] = np.where(df_team_games['Possessions'] > 0, 100.0 * df_team_games['PtsScored'] / df_team_games['Possessions'], 0.0)
+    df_team_games['Defensive_Rating'] = np.where(df_team_games['Possessions'] > 0, 100.0 * df_team_games['PtsConceded'] / df_team_games['Possessions'], 0.0)
+    df_team_games['eFG%'] = np.where(df_team_games['FGA'] > 0, (df_team_games['FGM'] + 0.5 * df_team_games['FG3M']) / df_team_games['FGA'], 0.0)
+    df_team_games['TOV%'] = np.where((df_team_games['FGA'] + 0.44 * df_team_games['FTA'] + df_team_games['TOV']) > 0, df_team_games['TOV'] / (df_team_games['FGA'] + 0.44 * df_team_games['FTA'] + df_team_games['TOV']), 0.0)
+    df_team_games['ORB%'] = np.where((df_team_games['OREB'] + df_team_games['Opp_DREB']) > 0, df_team_games['OREB'] / (df_team_games['OREB'] + df_team_games['Opp_DREB']), 0.0)
+    df_team_games['FT_Rate'] = np.where(df_team_games['FGA'] > 0, df_team_games['FTM'] / df_team_games['FGA'], 0.0)
+    
+    # Group by Team and Season to compute EMAs
+    print("Computing EMAs (span=5 and span=10) with shift(1) to avoid data leakage...")
+    grouped = df_team_games.groupby(['Team', 'Season'])
+    
+    metrics = ['Offensive_Rating', 'Defensive_Rating', 'eFG%', 'TOV%', 'ORB%', 'FT_Rate']
+    for span in [5, 10]:
+        for col in metrics:
+            df_team_games[f'{col}_EMA_{span}'] = grouped[col].transform(lambda x: x.ewm(span=span, adjust=False).mean().shift(1))
+            
+    # Compute Rest & Fatigue
+    print("Computing rest & fatigue features...")
+    df_team_games['Date_dt'] = pd.to_datetime(df_team_games['Date'])
+    df_team_games['Days_Rest'] = df_team_games.groupby(['Team', 'Season'])['Date_dt'].diff().dt.days
+    df_team_games['Days_Rest'] = df_team_games['Days_Rest'].fillna(7.0).clip(upper=7.0)
+    df_team_games['Back_To_Back'] = np.where(df_team_games['Days_Rest'] == 1.0, 1.0, 0.0)
+    
+    # 3 games in 4 nights
+    df_team_games['Three_In_Four_Days'] = df_team_games.groupby(['Team', 'Season'])['Date_dt'].diff(2).dt.days
+    df_team_games['Three_In_Four'] = np.where(df_team_games['Three_In_Four_Days'] <= 3.0, 1.0, 0.0)
+    
+    # Split back into Home and Away subsets
+    df_home_feats = df_team_games[df_team_games['Role'] == 'Home'].copy()
+    df_away_feats = df_team_games[df_team_games['Role'] == 'Away'].copy()
+    
+    # Build columns mapping to merge back
+    home_cols = {'Match_Id': 'id', 'Days_Rest': 'Home_Days_Rest', 'Back_To_Back': 'Home_Back_To_Back', 'Three_In_Four': 'Home_Three_In_Four'}
+    away_cols = {'Match_Id': 'id', 'Days_Rest': 'Away_Days_Rest', 'Back_To_Back': 'Away_Back_To_Back', 'Three_In_Four': 'Away_Three_In_Four'}
+    
+    for span in [5, 10]:
+        for col in metrics:
+            home_cols[f'{col}_EMA_{span}'] = f'Home_{col}_EMA_{span}'
+            away_cols[f'{col}_EMA_{span}'] = f'Away_{col}_EMA_{span}'
+            
+    df_home_subset = df_home_feats[list(home_cols.keys())].rename(columns=home_cols)
+    df_away_subset = df_away_feats[list(away_cols.keys())].rename(columns=away_cols)
+    
+    print("Merging features back to match-level dataframe...")
+    df_matches = pd.merge(df_matches, df_home_subset, on='id', how='left')
+    df_matches = pd.merge(df_matches, df_away_subset, on='id', how='left')
+    
+    # Calculate fallbacks for first games in seasons where EMA is NaN
+    for span in [5, 10]:
+        for col in metrics:
+            overall_mean = df_team_games[col].mean()
+            df_matches[f'Home_{col}_EMA_{span}'] = df_matches[f'Home_{col}_EMA_{span}'].fillna(overall_mean)
+            df_matches[f'Away_{col}_EMA_{span}'] = df_matches[f'Away_{col}_EMA_{span}'].fillna(overall_mean)
+            
+    # Calculate Net Ratings and Net Rating EMAs
+    for span in [5, 10]:
+        df_matches[f'Home_Net_Rating_EMA_{span}'] = df_matches[f'Home_Offensive_Rating_EMA_{span}'] - df_matches[f'Home_Defensive_Rating_EMA_{span}']
+        df_matches[f'Away_Net_Rating_EMA_{span}'] = df_matches[f'Away_Offensive_Rating_EMA_{span}'] - df_matches[f'Away_Defensive_Rating_EMA_{span}']
+        
+    # 2. Merge Squad Health
+    print("Merging Squad Health from current_squad_health.csv...")
+    try:
+        df_health = pd.read_csv("current_squad_health.csv")
+        health_dict = df_health.set_index('Team').to_dict(orient='index')
+    except Exception as e:
+        print(f"Error reading current_squad_health.csv: {e}. Defaulting to empty.")
+        health_dict = {}
+        
+    # Initialize all health columns to 0.0 (historical games defaults)
+    health_metrics = ['Missing_Usage_Pct', 'Missing_BPM_Pct', 'Missing_Minutes_Pct', 'Injured_Players_Count']
+    for col in health_metrics:
+        df_matches[f'Home_{col}'] = 0.0
+        df_matches[f'Away_{col}'] = 0.0
+        
+    # Set current season (2026) values from squad health CSV
+    is_2026 = df_matches['Season'] == 2026
+    for idx, row in df_matches[is_2026].iterrows():
+        h_team = row['HomeTeam']
+        a_team = row['AwayTeam']
+        h_health = health_dict.get(h_team, {})
+        a_health = health_dict.get(a_team, {})
+        for col in health_metrics:
+            df_matches.loc[idx, f'Home_{col}'] = h_health.get(col, 0.0)
+            df_matches.loc[idx, f'Away_{col}'] = a_health.get(col, 0.0)
+            
+    # 3. Talent Floor
+    print("Calculating and merging Talent Floor from player win shares...")
+    df_tf = calculate_talent_floors(conn)
+    df_matches = pd.merge(df_matches, df_tf.rename(columns={'Talent_Floor': 'Home_Talent_Floor'}), left_on=['HomeTeam', 'Season'], right_on=['Team', 'Season'], how='left').drop(columns=['Team'])
+    df_matches = pd.merge(df_matches, df_tf.rename(columns={'Talent_Floor': 'Away_Talent_Floor'}), left_on=['AwayTeam', 'Season'], right_on=['Team', 'Season'], how='left').drop(columns=['Team'])
+    df_matches['Home_Talent_Floor'] = df_matches['Home_Talent_Floor'].fillna(0.0)
+    df_matches['Away_Talent_Floor'] = df_matches['Away_Talent_Floor'].fillna(0.0)
+    
+    # 4. Referee Stats
+    print("Calculating Crew Chief officiating stats...")
+    df_matches = calculate_referee_stats(df_matches)
+    
+    # 5. Market Data
+    print("Calculating market probability...")
+    df_matches['Prob_Home'] = (1.0 / df_matches['BookieHomeOdds']) / ((1.0 / df_matches['BookieHomeOdds']) + (1.0 / df_matches['BookieAwayOdds']))
+    
+    # Merge Polymarket historical odds
+    print("Merging Polymarket historical odds...")
+    POLY_TO_FULL = {
+        'IND': 'Indiana Fever',
+        'CHI': 'Chicago Sky',
+        'LVA': 'Las Vegas Aces',
+        'NYL': 'New York Liberty',
+        'SEA': 'Seattle Storm',
+        'MIN': 'Minnesota Lynx',
+        'PHO': 'Phoenix Mercury',
+        'PHX': 'Phoenix Mercury',
+        'DAL': 'Dallas Wings',
+        'ATL': 'Atlanta Dream',
+        'CON': 'Connecticut Sun',
+        'LAS': 'Los Angeles Sparks',
+        'WAS': 'Washington Mystics'
+    }
+    try:
+        df_poly = pd.read_sql_query("SELECT match_date, home_team, away_team, home_yes_price FROM polymarket_odds", conn)
+        df_poly['HomeTeam'] = df_poly['home_team'].map(POLY_TO_FULL)
+        df_poly['AwayTeam'] = df_poly['away_team'].map(POLY_TO_FULL)
+        df_poly = df_poly.rename(columns={
+            'match_date': 'Date',
+            'home_yes_price': 'Poly_Prob_Home'
+        })
+        df_poly = df_poly.dropna(subset=['HomeTeam', 'AwayTeam'])
+        df_poly = df_poly[['Date', 'HomeTeam', 'AwayTeam', 'Poly_Prob_Home']]
+        df_matches = pd.merge(df_matches, df_poly, on=['Date', 'HomeTeam', 'AwayTeam'], how='left')
+    except Exception as e:
+        print(f"Error merging Polymarket odds: {e}")
+        df_matches['Poly_Prob_Home'] = np.nan
+    
+    # 6. Differentials
+    print("Calculating feature differentials (Home - Away)...")
+    for span in [5, 10]:
+        df_matches[f'Net_Rating_Diff_{span}'] = df_matches[f'Home_Net_Rating_EMA_{span}'] - df_matches[f'Away_Net_Rating_EMA_{span}']
+        df_matches[f'eFG%_Diff_{span}'] = df_matches[f'Home_eFG%_EMA_{span}'] - df_matches[f'Away_eFG%_EMA_{span}']
+        df_matches[f'TOV%_Diff_{span}'] = df_matches[f'Home_TOV%_EMA_{span}'] - df_matches[f'Away_TOV%_EMA_{span}']
+        df_matches[f'ORB%_Diff_{span}'] = df_matches[f'Home_ORB%_EMA_{span}'] - df_matches[f'Away_ORB%_EMA_{span}']
+        df_matches[f'FT_Rate_Diff_{span}'] = df_matches[f'Home_FT_Rate_EMA_{span}'] - df_matches[f'Away_FT_Rate_EMA_{span}']
+        
+    df_matches['Rest_Diff'] = df_matches['Home_Days_Rest'] - df_matches['Away_Days_Rest']
+    df_matches['Missing_Usage_Diff'] = df_matches['Home_Missing_Usage_Pct'] - df_matches['Away_Missing_Usage_Pct']
+    df_matches['Talent_Floor_Diff'] = df_matches['Home_Talent_Floor'] - df_matches['Away_Talent_Floor']
+    
+    # 7. Head-to-Head Bias
+    print("Calculating Head-to-Head (H2H) win bias...")
+    df_matches = calculate_h2h_bias(df_matches)
+    
+    # Target variables
+    df_matches['Home_Win'] = (df_matches['HomeScore'] > df_matches['AwayScore']).astype(int)
+    df_matches['Score_Diff'] = df_matches['HomeScore'] - df_matches['AwayScore']
+    
+    # Save the output
+    output_file = "ml_ready_data.csv"
+    df_matches.to_csv(output_file, index=False)
+    print(f"Feature engineering complete! Saved dataset with {len(df_matches)} matches to {output_file}.")
+    conn.close()
+
+if __name__ == "__main__":
+    main()
