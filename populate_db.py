@@ -411,6 +411,33 @@ def main():
     elo = EloModel()
     current_season = None
     
+    # Query existing FanDuel odds from database before they get cleared
+    existing_fanduel_odds = {}
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(raw_matches);")
+        columns = [c[1] for c in cursor.fetchall()]
+        if 'IsFanduelOdds' in columns:
+            cursor.execute("""
+                SELECT Date, HomeTeam, AwayTeam, BookieHomeOdds, BookieAwayOdds, OpeningSpread, ClosingSpread, OverUnder 
+                FROM raw_matches 
+                WHERE IsFanduelOdds = 1
+            """)
+            for row in cursor.fetchall():
+                key = (row[0], row[1], row[2])
+                existing_fanduel_odds[key] = {
+                    'BookieHomeOdds': row[3],
+                    'BookieAwayOdds': row[4],
+                    'OpeningSpread': row[5],
+                    'ClosingSpread': row[6],
+                    'OverUnder': row[7]
+                }
+            print(f"Loaded {len(existing_fanduel_odds)} existing FanDuel odds records from database.")
+        conn.close()
+    except Exception as e:
+        print("Failed to query existing FanDuel odds:", e)
+    
     # Fetch live FanDuel odds
     try:
         fd_odds_list = fetch_fanduel_odds()
@@ -442,29 +469,43 @@ def main():
             home_team, away_team, date, r_home, r_away
         )
         
-        # Check if match exists in FanDuel odds (matching date and teams)
-        fd_match = None
-        for fd_g in fd_odds_list:
-            if fd_g.get('home_team_full') == home_team and fd_g.get('away_team_full') == away_team:
-                fd_date = fd_g.get('date')
-                if fd_date == date:
-                    fd_match = fd_g
-                    break
-                else:
-                    try:
-                        d1 = pd.to_datetime(fd_date).date()
-                        d2 = pd.to_datetime(date).date()
-                        if abs((d1 - d2).days) <= 1:
-                            fd_match = fd_g
-                            break
-                    except Exception:
-                        pass
+        is_fanduel_odds = 0
+        db_key = (date, home_team, away_team)
         
-        if fd_match:
-            bookie_home_odds = fd_match['home_odds']
-            bookie_away_odds = fd_match['away_odds']
-            closing_spread = fd_match['closing_spread']
-            over_under = fd_match['over_under']
+        # Check if match has preserved FanDuel odds in database
+        if db_key in existing_fanduel_odds:
+            stored = existing_fanduel_odds[db_key]
+            bookie_home_odds = stored['BookieHomeOdds']
+            bookie_away_odds = stored['BookieAwayOdds']
+            opening_spread = stored['OpeningSpread']
+            closing_spread = stored['ClosingSpread']
+            over_under = stored['OverUnder']
+            is_fanduel_odds = 1
+        else:
+            # Check if match exists in live FanDuel odds (matching date and teams)
+            fd_match = None
+            for fd_g in fd_odds_list:
+                if fd_g.get('home_team_full') == home_team and fd_g.get('away_team_full') == away_team:
+                    fd_date = fd_g.get('date')
+                    if fd_date == date:
+                        fd_match = fd_g
+                        break
+                    else:
+                        try:
+                            d1 = pd.to_datetime(fd_date).date()
+                            d2 = pd.to_datetime(date).date()
+                            if abs((d1 - d2).days) <= 1:
+                                fd_match = fd_g
+                                break
+                        except Exception:
+                            pass
+            
+            if fd_match:
+                bookie_home_odds = fd_match['home_odds']
+                bookie_away_odds = fd_match['away_odds']
+                closing_spread = fd_match['closing_spread']
+                over_under = fd_match['over_under']
+                is_fanduel_odds = 1
             
         crew_chief, home_ref, away_ref = assign_refs(date, home_team, away_team)
         
@@ -474,6 +515,7 @@ def main():
         match['BookieHomeOdds'] = bookie_home_odds
         match['BookieAwayOdds'] = bookie_away_odds
         match['OverUnder'] = over_under
+        match['IsFanduelOdds'] = is_fanduel_odds
         match['CrewChief'] = crew_chief
         match['HomeRef'] = home_ref
         match['AwayRef'] = away_ref
@@ -512,7 +554,8 @@ def main():
         AwayFGA, AwayFTA, AwayOREB, AwayTOV, AwayMIN,
         AwayFGM, AwayFG3M, AwayFTM, AwayDREB, AwayPF,
         HomePossessions, HomePace, AwayPossessions, AwayPace,
-        HomePtsScored, HomePtsConceded, AwayPtsScored, AwayPtsConceded
+        HomePtsScored, HomePtsConceded, AwayPtsScored, AwayPtsConceded,
+        IsFanduelOdds
     ) VALUES (
         :Date, :HomeTeam, :AwayTeam, :HomeScore, :AwayScore,
         :HomeRef, :AwayRef, :CrewChief,
@@ -522,7 +565,8 @@ def main():
         :AwayFGA, :AwayFTA, :AwayOREB, :AwayTOV, :AwayMIN,
         :AwayFGM, :AwayFG3M, :AwayFTM, :AwayDREB, :AwayPF,
         :HomePossessions, :HomePace, :AwayPossessions, :AwayPace,
-        :HomePtsScored, :HomePtsConceded, :AwayPtsScored, :AwayPtsConceded
+        :HomePtsScored, :HomePtsConceded, :AwayPtsScored, :AwayPtsConceded,
+        :IsFanduelOdds
     );
     """, matches)
     
@@ -551,6 +595,7 @@ def main():
         from build_squad_health import build_squad_health
         from data_processing import standardize_and_calculate_metrics
         import feature_engineering
+        import train_model
         
         print("Calculating squad health...")
         build_squad_health()
@@ -560,6 +605,9 @@ def main():
         
         print("Running feature engineering...")
         feature_engineering.main()
+        print("Running model training...")
+        train_model.main()
+        
         
         print("Pipeline sync completed successfully!")
     except Exception as e:

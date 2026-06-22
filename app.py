@@ -26,9 +26,9 @@ app = Flask(
 flask_cors.CORS(app)
 
 # File paths
-DB_NAME = "wnba.db"
-MODEL_PATH = "wnba_spread_model.pkl"
-METADATA_PATH = "model_metadata.json"
+DB_NAME = os.path.join(base_dir, "wnba.db")
+MODEL_PATH = os.path.join(base_dir, "wnba_spread_model.pkl")
+METADATA_PATH = os.path.join(base_dir, "model_metadata.json")
 
 # Global cache variables
 MODEL = None
@@ -214,6 +214,11 @@ def init_app_data():
             'PF': row['AwayPF'], 'Opp_DREB': row['HomeDREB']
         })
     df_team_games = pd.DataFrame(team_games)
+    if df_team_games.empty:
+        raise ValueError(
+            f"No match data found in the database at '{DB_NAME}'. "
+            "Please make sure you have run 'python populate_db.py' or 'python db_manager.py' to seed the database."
+        )
     df_team_games = df_team_games.sort_values(['Team', 'Season', 'Date']).reset_index(drop=True)
     
     df_team_games['Offensive_Rating'] = np.where(df_team_games['Possessions'] > 0, 100.0 * df_team_games['PtsScored'] / df_team_games['Possessions'], 0.0)
@@ -751,6 +756,41 @@ def upcoming_predictions():
 def scrape_polymarket_endpoint():
     try:
         scrape_polymarket.main()
+        return get_upcoming_bets()
+    except Exception as e:
+        return jsonify({'error': f'Scraping failed: {str(e)}'}), 500
+
+@app.route('/api/scrape_fanduel', methods=['POST'])
+def scrape_fanduel_endpoint():
+    try:
+        fd_games = fetch_fanduel_odds()
+        if fd_games:
+            conn = sqlite3.connect(DB_NAME)
+            cursor = conn.cursor()
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS polymarket_odds (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                match_date TEXT NOT NULL,
+                home_team TEXT NOT NULL,
+                away_team TEXT NOT NULL,
+                home_yes_price REAL NOT NULL,
+                away_yes_price REAL NOT NULL,
+                polymarket_volume REAL,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """)
+            cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_poly_match 
+            ON polymarket_odds(match_date, home_team, away_team);
+            """)
+            for game in fd_games:
+                cursor.execute("""
+                INSERT OR IGNORE INTO polymarket_odds (
+                    match_date, home_team, away_team, home_yes_price, away_yes_price, polymarket_volume
+                ) VALUES (?, ?, ?, 0.5, 0.5, 0.0)
+                """, (game['date'], game['home_team_abbr'], game['away_team_abbr']))
+            conn.commit()
+            conn.close()
         return get_upcoming_bets()
     except Exception as e:
         return jsonify({'error': f'Scraping failed: {str(e)}'}), 500

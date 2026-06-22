@@ -9,6 +9,34 @@ export default function UpcomingBets() {
   const [minEdgePct, setMinEdgePct] = useState(3.0); // entered as percentage, e.g. 3.0%
   const [flatWagerPct, setFlatWagerPct] = useState(12.0); // entered as percentage, e.g. 12.0%
   const [marketSource, setMarketSource] = useState('polymarket'); // 'polymarket' or 'bookie'
+  const [customOdds, setCustomOdds] = useState(() => {
+    const saved = localStorage.getItem('wnba_custom_odds');
+    return saved !== null ? JSON.parse(saved) : {};
+  });
+
+  useEffect(() => {
+    localStorage.setItem('wnba_custom_odds', JSON.stringify(customOdds));
+  }, [customOdds]);
+
+  const handleCustomOddsChange = (gameKey, teamSide, val) => {
+    setCustomOdds(prev => {
+      const current = prev[gameKey] || {};
+      const nextOdds = {
+        ...current,
+        [teamSide]: val
+      };
+      
+      const updated = {
+        ...prev,
+        [gameKey]: nextOdds
+      };
+      
+      if (!nextOdds.home_odds && !nextOdds.away_odds) {
+        delete updated[gameKey];
+      }
+      return updated;
+    });
+  };
 
   // Data and UI state
   const [bets, setBets] = useState([]);
@@ -42,14 +70,16 @@ export default function UpcomingBets() {
     setScraping(true);
     setError(null);
     try {
-      const res = await fetch('/api/scrape_polymarket', { method: 'POST' });
+      const endpoint = marketSource === 'bookie' ? '/api/scrape_fanduel' : '/api/scrape_polymarket';
+      const res = await fetch(endpoint, { method: 'POST' });
       if (!res.ok) {
         throw new Error(`Server returned status ${res.status}`);
       }
       const data = await res.json();
       setBets(data);
     } catch (err) {
-      setError(`Failed to run live Polymarket scraper: ${err.message}`);
+      const sourceName = marketSource === 'bookie' ? 'FanDuel odds scraper' : 'live Polymarket scraper';
+      setError(`Failed to run ${sourceName}: ${err.message}`);
     } finally {
       setScraping(false);
     }
@@ -159,7 +189,7 @@ export default function UpcomingBets() {
               }}
               disabled={loading || scraping}
             >
-              {scraping ? 'Scraping & Predicting...' : 'Scrape Live Polymarket'}
+              {scraping ? 'Scraping & Predicting...' : marketSource === 'bookie' ? 'Scrape Live FanDuel Odds' : 'Scrape Live Polymarket'}
             </button>
           </div>
         </div>
@@ -183,7 +213,7 @@ export default function UpcomingBets() {
             No upcoming match markets found in the database.
             <br />
             <span style={{ fontSize: '0.85rem', display: 'block', marginTop: '12px' }}>
-              Click <strong>Scrape Live Polymarket</strong> above to fetch current WNBA matchups.
+              Click <strong>{marketSource === 'bookie' ? 'Scrape Live FanDuel Odds' : 'Scrape Live Polymarket'}</strong> above to fetch current WNBA matchups.
             </span>
           </div>
         ) : (
@@ -206,22 +236,52 @@ export default function UpcomingBets() {
               <tbody>
                 {bets.map((bet, idx) => {
                   // Calculate edges and odds dynamically
+                  const gameKey = `${bet.date}_${bet.home_team_abbr}_${bet.away_team_abbr}`;
+                  const custom = customOdds[gameKey];
+
                   const homeModelProb = bet.home_prob / 100;
                   const awayModelProb = bet.away_prob / 100;
 
-                  const homeMarketProb = marketSource === 'polymarket'
-                    ? bet.home_price
-                    : (bet.bookmaker ? bet.bookmaker.home_implied_prob / 100 : 0.5);
-                  const awayMarketProb = marketSource === 'polymarket'
-                    ? bet.away_price
-                    : (bet.bookmaker ? bet.bookmaker.away_implied_prob / 100 : 0.5);
-
-                  const homeOdds = marketSource === 'polymarket'
+                  let homeOdds = marketSource === 'polymarket'
                     ? (bet.home_price > 0 ? 1.0 / bet.home_price : 99.0)
                     : (bet.bookmaker ? bet.bookmaker.home_odds : 1.90);
-                  const awayOdds = marketSource === 'polymarket'
+                  let awayOdds = marketSource === 'polymarket'
                     ? (bet.away_price > 0 ? 1.0 / bet.away_price : 99.0)
                     : (bet.bookmaker ? bet.bookmaker.away_odds : 1.90);
+
+                  if (marketSource === 'bookie' && !bet.bookmaker?.is_fanduel && custom) {
+                    if (custom.home_odds) {
+                      const parsed = parseFloat(custom.home_odds);
+                      if (!isNaN(parsed) && parsed > 0) homeOdds = parsed;
+                    }
+                    if (custom.away_odds) {
+                      const parsed = parseFloat(custom.away_odds);
+                      if (!isNaN(parsed) && parsed > 0) awayOdds = parsed;
+                    }
+                  }
+
+                  let homeMarketProb = 0.5;
+                  let awayMarketProb = 0.5;
+
+                  if (marketSource === 'polymarket') {
+                    homeMarketProb = bet.home_price;
+                    awayMarketProb = bet.away_price;
+                  } else {
+                    const hasCustom = custom && (
+                      (custom.home_odds && !isNaN(parseFloat(custom.home_odds))) ||
+                      (custom.away_odds && !isNaN(parseFloat(custom.away_odds)))
+                    );
+                    if (!bet.bookmaker?.is_fanduel && hasCustom) {
+                      const p_home_raw = 1.0 / homeOdds;
+                      const p_away_raw = 1.0 / awayOdds;
+                      const sum_p = p_home_raw + p_away_raw;
+                      homeMarketProb = sum_p > 0 ? p_home_raw / sum_p : 0.5;
+                      awayMarketProb = sum_p > 0 ? p_away_raw / sum_p : 0.5;
+                    } else {
+                      homeMarketProb = bet.bookmaker ? bet.bookmaker.home_implied_prob / 100 : 0.5;
+                      awayMarketProb = bet.bookmaker ? bet.bookmaker.away_implied_prob / 100 : 0.5;
+                    }
+                  }
 
                   const homeEdge = homeModelProb - homeMarketProb;
                   const awayEdge = awayModelProb - awayMarketProb;
@@ -309,12 +369,58 @@ export default function UpcomingBets() {
                               <span>${bet.away_price.toFixed(2)}</span>
                             </>
                           ) : (
-                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
-                              <div>
-                                <span>{bet.bookmaker?.home_odds ? bet.bookmaker.home_odds.toFixed(2) : '—'}</span>
-                                <span style={{ margin: '0 6px', color: 'var(--color-text-dim)' }}>/</span>
-                                <span>{bet.bookmaker?.away_odds ? bet.bookmaker.away_odds.toFixed(2) : '—'}</span>
-                              </div>
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
+                              {bet.bookmaker?.is_fanduel ? (
+                                <div>
+                                  <span>{bet.bookmaker?.home_odds ? bet.bookmaker.home_odds.toFixed(2) : '—'}</span>
+                                  <span style={{ margin: '0 6px', color: 'var(--color-text-dim)' }}>/</span>
+                                  <span>{bet.bookmaker?.away_odds ? bet.bookmaker.away_odds.toFixed(2) : '—'}</span>
+                                </div>
+                              ) : (
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    min="1.01"
+                                    placeholder={bet.bookmaker?.home_odds ? bet.bookmaker.home_odds.toFixed(2) : '1.90'}
+                                    value={customOdds[gameKey]?.home_odds || ''}
+                                    onChange={(e) => handleCustomOddsChange(gameKey, 'home_odds', e.target.value)}
+                                    style={{
+                                      width: '64px',
+                                      background: 'rgba(255, 255, 255, 0.05)',
+                                      border: '1px solid var(--border-card)',
+                                      color: 'var(--color-text-main)',
+                                      borderRadius: '6px',
+                                      padding: '4px 6px',
+                                      fontSize: '0.8rem',
+                                      textAlign: 'center',
+                                      outline: 'none',
+                                      transition: 'border-color 0.2s'
+                                    }}
+                                  />
+                                  <span style={{ color: 'var(--color-text-dim)' }}>/</span>
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    min="1.01"
+                                    placeholder={bet.bookmaker?.away_odds ? bet.bookmaker.away_odds.toFixed(2) : '1.90'}
+                                    value={customOdds[gameKey]?.away_odds || ''}
+                                    onChange={(e) => handleCustomOddsChange(gameKey, 'away_odds', e.target.value)}
+                                    style={{
+                                      width: '64px',
+                                      background: 'rgba(255, 255, 255, 0.05)',
+                                      border: '1px solid var(--border-card)',
+                                      color: 'var(--color-text-main)',
+                                      borderRadius: '6px',
+                                      padding: '4px 6px',
+                                      fontSize: '0.8rem',
+                                      textAlign: 'center',
+                                      outline: 'none',
+                                      transition: 'border-color 0.2s'
+                                    }}
+                                  />
+                                </div>
+                              )}
                               {bet.bookmaker?.is_fanduel ? (
                                 <span style={{
                                   background: 'rgba(16, 185, 129, 0.15)',
@@ -330,16 +436,22 @@ export default function UpcomingBets() {
                                 </span>
                               ) : (
                                 <span style={{
-                                  background: 'rgba(255, 255, 255, 0.05)',
-                                  border: '1px solid var(--border-card)',
-                                  color: 'var(--color-text-muted)',
+                                  background: customOdds[gameKey]?.home_odds || customOdds[gameKey]?.away_odds
+                                    ? 'rgba(245, 158, 11, 0.15)'
+                                    : 'rgba(255, 255, 255, 0.05)',
+                                  border: customOdds[gameKey]?.home_odds || customOdds[gameKey]?.away_odds
+                                    ? '1px solid var(--neon-amber)'
+                                    : '1px solid var(--border-card)',
+                                  color: customOdds[gameKey]?.home_odds || customOdds[gameKey]?.away_odds
+                                    ? 'var(--neon-amber)'
+                                    : 'var(--color-text-muted)',
                                   padding: '2px 6px',
                                   borderRadius: '4px',
                                   fontSize: '0.65rem',
                                   fontWeight: '600',
                                   display: 'inline-block'
                                 }}>
-                                  [ELO]
+                                  {customOdds[gameKey]?.home_odds || customOdds[gameKey]?.away_odds ? '[ELO - Custom]' : '[ELO]'}
                                 </span>
                               )}
                             </div>
