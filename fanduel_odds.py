@@ -12,11 +12,12 @@ AN_TO_CANONICAL_ABBR = {
     'IND': 'IND',
     'CHI': 'CHI',
     'PHX': 'PHX',
-    'PHO': 'PHX',
+    'POR': 'POR',
     'DAL': 'DAL',
     'ATL': 'ATL',
     'CON': 'CON',
-    'SEA': 'SEA'
+    'SEA': 'SEA',
+    'TOR': 'TOR'
 }
 
 CANONICAL_ABBR_TO_FULL = {
@@ -32,7 +33,9 @@ CANONICAL_ABBR_TO_FULL = {
     'CON': 'Connecticut Sun',
     'LAS': 'Los Angeles Sparks',
     'WAS': 'Washington Mystics',
-    'GSV': 'Golden State Valkyries'
+    'GSV': 'Golden State Valkyries',
+    'TOR': 'Toronto Tempo',
+    'POR': 'Portland Fire'
 }
 
 def american_to_decimal(american_odds):

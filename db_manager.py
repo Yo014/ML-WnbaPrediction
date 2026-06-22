@@ -111,7 +111,24 @@ def create_tables(db_path=DB_NAME):
     );
     """)
 
-    
+    # Create confirmed_bets table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS confirmed_bets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        match_date TEXT NOT NULL,
+        home_team TEXT NOT NULL,
+        away_team TEXT NOT NULL,
+        recommended_side TEXT NOT NULL,
+        wager_type TEXT NOT NULL,
+        wager_amount REAL NOT NULL,
+        odds REAL NOT NULL,
+        outcome TEXT,
+        bankroll_change REAL,
+        confirmed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (match_date, home_team, away_team)
+    );
+    """)
+
     conn.commit()
     conn.close()
 

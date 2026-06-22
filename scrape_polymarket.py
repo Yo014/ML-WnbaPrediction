@@ -19,7 +19,9 @@ TEAM_MAP = {
     'Connecticut Sun': 'CON',
     'Los Angeles Sparks': 'LAS',
     'Washington Mystics': 'WAS',
-    'Golden State Valkyries': 'GSV'
+    'Golden State Valkyries': 'GSV',
+    'Toronto Tempo': 'TOR',
+    'Portland Fire': 'POR'
 }
 def safe_json_loads(val):
     """
@@ -66,6 +68,9 @@ def parse_market(market):
     away_team_full = None
     home_team_full = None
     
+    def clean_str(s):
+        return "".join(c for c in s.lower() if c.isalnum())
+        
     for sep in [" vs. ", " vs ", " @ "]:
         if sep in q_normalized:
             parts = q_normalized.split(sep)
@@ -75,9 +80,13 @@ def parse_market(market):
                 
                 # Check which team from TEAM_MAP matches raw_team_a and raw_team_b
                 for fullname in TEAM_MAP:
-                    if fullname.lower() in raw_team_a.lower():
+                    clean_full = clean_str(fullname)
+                    clean_a = clean_str(raw_team_a)
+                    clean_b = clean_str(raw_team_b)
+                    
+                    if clean_full in clean_a or (len(clean_a) >= 4 and clean_a in clean_full):
                         away_team_full = fullname
-                    if fullname.lower() in raw_team_b.lower():
+                    if clean_full in clean_b or (len(clean_b) >= 4 and clean_b in clean_full):
                         home_team_full = fullname
                 break
                 
@@ -98,12 +107,13 @@ def parse_market(market):
     away_yes_price = None
     
     for idx, outcome in enumerate(outcomes):
-        if home_team_full.lower() in outcome.lower():
+        clean_outcome = clean_str(outcome)
+        if clean_str(home_team_full) in clean_outcome or (len(clean_outcome) >= 4 and clean_outcome in clean_str(home_team_full)):
             try:
                 home_yes_price = float(prices[idx])
             except (ValueError, TypeError, IndexError):
                 pass
-        elif away_team_full.lower() in outcome.lower():
+        elif clean_str(away_team_full) in clean_outcome or (len(clean_outcome) >= 4 and clean_outcome in clean_str(away_team_full)):
             try:
                 away_yes_price = float(prices[idx])
             except (ValueError, TypeError, IndexError):

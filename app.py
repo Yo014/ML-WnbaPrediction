@@ -399,6 +399,114 @@ def normalize_team_name(team):
         return 'PHX'
     return team
 
+def get_team_abbr(team_name):
+    if not team_name:
+        return ""
+    t = team_name.strip().upper()
+    if t == 'PHO':
+        t = 'PHX'
+    if t == 'GS':
+        t = 'GSV'
+    if t == 'PDX' or t == 'POR':
+        t = 'PTF'
+    if t == 'TOT':
+        t = 'TOR'
+    for abbr, full in REVERSE_TEAM_MAP.items():
+        if full.upper() == t or abbr.upper() == t:
+            return normalize_team_name(abbr)
+    return t
+
+def auto_settle_bets(cursor):
+    """
+    Queries all confirmed bets where outcome is NULL, converts home and away team abbreviations
+    to full names using REVERSE_TEAM_MAP, checks raw_matches for matches on that date and with
+    those teams, and if a score is found, settles the bet by setting outcome ('won' or 'lost')
+    and bankroll_change (wager * (odds - 1.0) on win, -wager on loss) and saves it in the database.
+    """
+    cursor.execute("""
+        SELECT id, match_date, home_team, away_team, recommended_side, wager_amount, odds 
+        FROM confirmed_bets 
+        WHERE outcome IS NULL
+    """)
+    pending_bets = cursor.fetchall()
+    
+    def team_matches(side, team):
+        side_norm = normalize_team_name(side.strip().upper())
+        team_norm = normalize_team_name(team.strip().upper())
+        if side_norm == team_norm:
+            return True
+        side_full = REVERSE_TEAM_MAP.get(side_norm, side_norm).upper()
+        team_full = REVERSE_TEAM_MAP.get(team_norm, team_norm).upper()
+        return side_full == team_full
+
+    for bet in pending_bets:
+        bet_id, match_date, home_team, away_team, recommended_side, wager_amount, odds = bet
+        
+        # Resolve full names using REVERSE_TEAM_MAP
+        home_full = REVERSE_TEAM_MAP.get(normalize_team_name(home_team).upper(), home_team)
+        away_full = REVERSE_TEAM_MAP.get(normalize_team_name(away_team).upper(), away_team)
+        
+        # Check raw_matches for match on that date and with those teams
+        cursor.execute("""
+            SELECT HomeScore, AwayScore, HomeTeam, AwayTeam
+            FROM raw_matches
+            WHERE Date = ? AND (
+                (HomeTeam = ? AND AwayTeam = ?) OR
+                (HomeTeam = ? AND AwayTeam = ?)
+            )
+        """, (match_date, home_full, away_full, away_full, home_full))
+        match_row = cursor.fetchone()
+        
+        if match_row:
+            home_score, away_score, actual_home_team, actual_away_team = match_row
+            
+            # Determine winner
+            if home_score > away_score:
+                actual_winner = actual_home_team
+            else:
+                actual_winner = actual_away_team
+                
+            # Determine if the bet was on the home team or away team
+            bet_on_home = False
+            bet_on_away = False
+            
+            rec_side_clean = recommended_side.strip().upper()
+            if rec_side_clean == 'HOME':
+                bet_on_home = True
+            elif rec_side_clean == 'AWAY':
+                bet_on_away = True
+            elif team_matches(recommended_side, home_team):
+                bet_on_home = True
+            elif team_matches(recommended_side, away_team):
+                bet_on_away = True
+                
+            # Find which team the user betted on
+            if bet_on_home:
+                betted_team = home_full
+            elif bet_on_away:
+                betted_team = away_full
+            else:
+                betted_team = recommended_side
+                
+            # Check if betted_team matches actual_winner
+            won = team_matches(betted_team, actual_winner)
+            
+            if won:
+                outcome = 'won'
+                bankroll_change = wager_amount * (odds - 1.0)
+            else:
+                outcome = 'lost'
+                bankroll_change = -wager_amount
+                
+            cursor.execute("""
+                UPDATE confirmed_bets
+                SET outcome = ?, bankroll_change = ?
+                WHERE id = ?
+            """, (outcome, bankroll_change, bet_id))
+    
+    # Commit the changes to the database using the cursor's connection
+    cursor.connection.commit()
+
 def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chief=None, home_injured_list=None, away_injured_list=None):
     """
     Abstracted WNBA point spread and win probability prediction pipeline.
@@ -795,11 +903,136 @@ def scrape_fanduel_endpoint():
     except Exception as e:
         return jsonify({'error': f'Scraping failed: {str(e)}'}), 500
 
+@app.route('/api/confirm_bet', methods=['POST'])
+def confirm_bet():
+    data = request.get_json() or {}
+    if not data and request.form:
+        data = request.form
+        
+    match_date = data.get('match_date')
+    home_team = data.get('home_team')
+    away_team = data.get('away_team')
+    recommended_side = data.get('recommended_side')
+    wager_type = data.get('wager_type')
+    wager_amount = data.get('wager_amount')
+    odds = data.get('odds')
+    
+    if not all([match_date, home_team, away_team, recommended_side, wager_type, wager_amount, odds]):
+        return jsonify({'error': 'Missing required fields'}), 400
+        
+    try:
+        wager_amount = float(wager_amount)
+        odds = float(odds)
+    except ValueError:
+        return jsonify({'error': 'wager_amount and odds must be numeric'}), 400
+        
+    home_abbr = get_team_abbr(home_team)
+    away_abbr = get_team_abbr(away_team)
+    
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    try:
+        # Check if exists
+        cursor.execute("""
+            SELECT id FROM confirmed_bets 
+            WHERE match_date = ? AND home_team = ? AND away_team = ?
+        """, (match_date, home_abbr, away_abbr))
+        row = cursor.fetchone()
+        
+        if row:
+            cursor.execute("""
+                UPDATE confirmed_bets
+                SET recommended_side = ?, wager_type = ?, wager_amount = ?, odds = ?, outcome = NULL, bankroll_change = ?
+                WHERE match_date = ? AND home_team = ? AND away_team = ?
+            """, (recommended_side, wager_type, wager_amount, odds, -wager_amount, match_date, home_abbr, away_abbr))
+            message = 'Bet updated successfully'
+        else:
+            cursor.execute("""
+                INSERT INTO confirmed_bets (match_date, home_team, away_team, recommended_side, wager_type, wager_amount, odds, outcome, bankroll_change)
+                VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)
+            """, (match_date, home_abbr, away_abbr, recommended_side, wager_type, wager_amount, odds, -wager_amount))
+            message = 'Bet confirmed successfully'
+            
+        conn.commit()
+        return jsonify({'message': message})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/delete_bet', methods=['POST'])
+def delete_bet():
+    data = request.get_json() or {}
+    if not data and request.form:
+        data = request.form
+        
+    match_date = data.get('match_date') or data.get('date')
+    home_team = data.get('home_team')
+    away_team = data.get('away_team')
+    
+    if not all([match_date, home_team, away_team]):
+        return jsonify({'error': 'Missing required fields'}), 400
+        
+    home_abbr = get_team_abbr(home_team)
+    away_abbr = get_team_abbr(away_team)
+    
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            DELETE FROM confirmed_bets
+            WHERE match_date = ? AND home_team = ? AND away_team = ?
+        """, (match_date, home_abbr, away_abbr))
+        conn.commit()
+        return jsonify({'message': 'Bet deleted successfully'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/confirmed_bets', methods=['GET'])
+def get_confirmed_bets():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    try:
+        # Ensure confirmed_bets table is settled first
+        auto_settle_bets(cursor)
+        
+        cursor.execute("""
+            SELECT id, match_date, home_team, away_team, recommended_side, wager_type, wager_amount, odds, outcome, bankroll_change, confirmed_at
+            FROM confirmed_bets
+            ORDER BY match_date DESC, confirmed_at DESC
+        """)
+        rows = cursor.fetchall()
+        bets = []
+        for r in rows:
+            bets.append({
+                'id': r[0],
+                'match_date': r[1],
+                'home_team': r[2],
+                'away_team': r[3],
+                'recommended_side': r[4],
+                'wager_type': r[5],
+                'wager_amount': r[6],
+                'odds': r[7],
+                'outcome': r[8],
+                'bankroll_change': r[9],
+                'confirmed_at': r[10]
+            })
+        return jsonify(bets)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
 @app.route('/api/upcoming_bets')
 def get_upcoming_bets():
     try:
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
+        
+        # Run auto-settle first
+        auto_settle_bets(cursor)
         
         # Ensure tables exist
         cursor.execute("""
@@ -815,6 +1048,31 @@ def get_upcoming_bets():
         );
         """)
         conn.commit()
+        
+        # Query and map confirmed_bets
+        cursor.execute("""
+            SELECT id, match_date, home_team, away_team, recommended_side, wager_type, wager_amount, odds, outcome, bankroll_change, confirmed_at
+            FROM confirmed_bets
+        """)
+        bet_rows = cursor.fetchall()
+        confirmed_bets_map = {}
+        for r in bet_rows:
+            b_id, b_date, b_home, b_away, b_rec, b_type, b_amount, b_odds, b_outcome, b_change, b_at = r
+            h_abbr = get_team_abbr(b_home)
+            a_abbr = get_team_abbr(b_away)
+            confirmed_bets_map[(b_date, h_abbr, a_abbr)] = {
+                'id': b_id,
+                'match_date': b_date,
+                'home_team': b_home,
+                'away_team': b_away,
+                'recommended_side': b_rec,
+                'wager_type': b_type,
+                'wager_amount': b_amount,
+                'odds': b_odds,
+                'outcome': b_outcome,
+                'bankroll_change': b_change,
+                'confirmed_at': b_at
+            }
         
         # Fetch live FanDuel odds
         try:
@@ -873,7 +1131,9 @@ def get_upcoming_bets():
             home_yes_price = match['home_yes_price']
             away_yes_price = match['away_yes_price']
             volume = match['volume']
-            confirmed_bet = match['confirmed_bet']
+            
+            key = (match_date, get_team_abbr(home_abbr), get_team_abbr(away_abbr))
+            confirmed_bet = confirmed_bets_map.get(key, None)
             
             norm_home = normalize_team_name(home_abbr)
             norm_away = normalize_team_name(away_abbr)
