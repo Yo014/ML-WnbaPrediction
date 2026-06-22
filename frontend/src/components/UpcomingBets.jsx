@@ -55,64 +55,7 @@ export default function UpcomingBets() {
     }
   };
 
-  const handleConfirmBet = async (bet, wagerType, wagerAmount, odds, recommendedSide) => {
-    try {
-      const res = await fetch('/api/confirm_bet', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          match_date: bet.date,
-          home_team: bet.home_team_abbr,
-          away_team: bet.away_team_abbr,
-          recommended_side: recommendedSide,
-          wager_type: wagerType,
-          wager_amount: parseFloat(wagerAmount.toFixed(2)),
-          odds: parseFloat(odds.toFixed(2))
-        })
-      });
-      if (!res.ok) throw new Error('Failed to confirm bet');
-      fetchUpcomingBets();
-    } catch (err) {
-      setError(`Error confirming bet: ${err.message}`);
-    }
-  };
 
-  const handleSettleBet = async (bet, outcome) => {
-    try {
-      const res = await fetch('/api/settle_bet', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          match_date: bet.date,
-          home_team: bet.home_team_abbr,
-          away_team: bet.away_team_abbr,
-          outcome: outcome
-        })
-      });
-      if (!res.ok) throw new Error('Failed to settle bet');
-      fetchUpcomingBets();
-    } catch (err) {
-      setError(`Error settling bet: ${err.message}`);
-    }
-  };
-
-  const handleDeleteBet = async (bet) => {
-    try {
-      const res = await fetch('/api/delete_bet', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          match_date: bet.date,
-          home_team: bet.home_team_abbr,
-          away_team: bet.away_team_abbr
-        })
-      });
-      if (!res.ok) throw new Error('Failed to delete bet');
-      fetchUpcomingBets();
-    } catch (err) {
-      setError(`Error resetting/cancelling bet: ${err.message}`);
-    }
-  };
 
   useEffect(() => {
     fetchUpcomingBets();
@@ -126,58 +69,10 @@ export default function UpcomingBets() {
   };
 
   // Calculations for bankroll & stats
-  const settledPnL = bets.reduce((sum, bet) => {
-    if (bet.confirmed_bet && bet.confirmed_bet.outcome !== null) {
-      return sum + (bet.confirmed_bet.bankroll_change || 0);
-    }
-    return sum;
-  }, 0);
-
-  const currentBankroll = initialBankroll + settledPnL;
-
-  const trackedBets = bets.filter(b => b.confirmed_bet !== null);
-  const trackedCount = trackedBets.length;
-  const wins = trackedBets.filter(b => b.confirmed_bet.outcome === 'won').length;
-  const losses = trackedBets.filter(b => b.confirmed_bet.outcome === 'lost').length;
-  const totalSettled = wins + losses;
-  const winRate = totalSettled > 0 ? ((wins / totalSettled) * 100).toFixed(1) : '0.0';
+  const currentBankroll = initialBankroll;
 
   return (
     <div className="sim-dashboard-grid">
-      {/* Summary Dashboard Card */}
-      <div className="glass-card" style={{ marginBottom: '16px', padding: '20px' }}>
-        <div className="card-title" style={{ marginBottom: '16px' }}>
-          <span>Tracked Bets Performance Summary</span>
-          <span className="badge" style={{ background: 'rgba(99, 102, 241, 0.15)', borderColor: 'var(--neon-indigo)', color: 'var(--neon-indigo)' }}>
-            Stats
-          </span>
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '20px' }}>
-          <div style={{ textAlign: 'center', background: 'rgba(255, 255, 255, 0.02)', padding: '12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.05)' }}>
-            <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>Tracked Bets</div>
-            <div style={{ fontSize: '1.6rem', fontWeight: '800', color: 'var(--color-text-main)' }}>{trackedCount}</div>
-          </div>
-          <div style={{ textAlign: 'center', background: 'rgba(255, 255, 255, 0.02)', padding: '12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.05)' }}>
-            <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>Wins / Losses</div>
-            <div style={{ fontSize: '1.6rem', fontWeight: '800', color: 'var(--color-text-main)' }}>{wins}W - {losses}L</div>
-          </div>
-          <div style={{ textAlign: 'center', background: 'rgba(255, 255, 255, 0.02)', padding: '12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.05)' }}>
-            <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>Win Rate</div>
-            <div style={{ fontSize: '1.6rem', fontWeight: '800', color: 'var(--neon-indigo)' }}>{winRate}%</div>
-          </div>
-          <div style={{ textAlign: 'center', background: 'rgba(255, 255, 255, 0.02)', padding: '12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.05)' }}>
-            <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>Net P&L</div>
-            <div style={{ fontSize: '1.6rem', fontWeight: '800', color: settledPnL >= 0 ? 'var(--neon-emerald)' : 'var(--neon-rose)' }}>
-              {settledPnL >= 0 ? '+' : ''}${settledPnL.toFixed(2)}
-            </div>
-          </div>
-          <div style={{ textAlign: 'center', background: 'rgba(255, 255, 255, 0.02)', padding: '12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.05)' }}>
-            <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>Current Bankroll</div>
-            <div style={{ fontSize: '1.6rem', fontWeight: '800', color: 'var(--color-text-main)' }}>${currentBankroll.toFixed(2)}</div>
-          </div>
-        </div>
-      </div>
-
       {/* Parameter Control Card */}
       <div className="glass-card" style={{ marginBottom: '8px' }}>
         <div className="card-title">
@@ -305,7 +200,6 @@ export default function UpcomingBets() {
                   <th style={{ textAlign: 'right' }}>Suggested Kelly Wager</th>
                   <th style={{ textAlign: 'right' }}>Potential Win (Flat/Kelly)</th>
                   <th style={{ textAlign: 'right' }}>Potential Loss (Flat/Kelly)</th>
-                  <th style={{ textAlign: 'center' }}>Track Bet</th>
                   <th style={{ width: '80px' }}></th>
                 </tr>
               </thead>
@@ -356,6 +250,8 @@ export default function UpcomingBets() {
                     activePrice = awayMarketProb;
                     activeOdds = awayOdds;
                   }
+
+                  console.log(`Edge Diagnostic [${bet.away_team_abbr}@${bet.home_team_abbr}]: homeEdge=${homeEdge.toFixed(4)}, awayEdge=${awayEdge.toFixed(4)}, minEdge=${minEdge.toFixed(4)}, marketSource=${marketSource}, suggestedBet=${suggestedBet}`);
 
                   // Suggested wagers
                   let flatBetSize = 0;
@@ -525,148 +421,7 @@ export default function UpcomingBets() {
                             <span style={{ color: 'var(--color-text-dim)' }}>—</span>
                           )}
                         </td>
-                        <td style={{ textAlign: 'center', verticalAlign: 'middle' }}>
-                          {!bet.confirmed_bet ? (
-                            suggestedBet === 'No Bet' ? (
-                              <span style={{ color: 'var(--color-text-dim)' }}>—</span>
-                            ) : (
-                              <div style={{ display: 'flex', gap: '6px', justifyContent: 'center' }}>
-                                <button
-                                  onClick={() => handleConfirmBet(bet, 'flat', flatBetSize, activeOdds, isHomeBet ? bet.home_team_abbr : bet.away_team_abbr)}
-                                  className="select-input"
-                                  style={{
-                                    padding: '4px 8px',
-                                    fontSize: '0.7rem',
-                                    fontWeight: '700',
-                                    background: 'var(--neon-emerald)',
-                                    color: '#fff',
-                                    border: 'none',
-                                    borderRadius: '6px',
-                                    cursor: 'pointer'
-                                  }}
-                                >
-                                  Confirm Flat
-                                </button>
-                                <button
-                                  onClick={() => handleConfirmBet(bet, 'kelly', kellyBetSize, activeOdds, isHomeBet ? bet.home_team_abbr : bet.away_team_abbr)}
-                                  className="select-input"
-                                  style={{
-                                    padding: '4px 8px',
-                                    fontSize: '0.7rem',
-                                    fontWeight: '700',
-                                    background: 'var(--neon-indigo)',
-                                    color: '#fff',
-                                    border: 'none',
-                                    borderRadius: '6px',
-                                    cursor: 'pointer'
-                                  }}
-                                  disabled={kellyBetSize <= 0}
-                                >
-                                  Confirm Kelly
-                                </button>
-                              </div>
-                            )
-                          ) : (
-                            // Confirmed bet exists
-                            !bet.has_happened ? (
-                              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
-                                <span className="badge" style={{ background: 'rgba(251, 191, 36, 0.15)', borderColor: '#fbbf24', color: '#fbbf24', fontSize: '0.7rem', padding: '2px 6px' }}>
-                                  Pending ({bet.confirmed_bet.wager_type.toUpperCase()})
-                                </span>
-                                <button
-                                  onClick={() => handleDeleteBet(bet)}
-                                  className="select-input"
-                                  style={{
-                                    padding: '2px 6px',
-                                    fontSize: '0.65rem',
-                                    background: 'rgba(244, 63, 94, 0.2)',
-                                    color: 'var(--neon-rose)',
-                                    border: '1px solid var(--neon-rose)',
-                                    borderRadius: '4px',
-                                    cursor: 'pointer'
-                                  }}
-                                >
-                                  Cancel
-                                </button>
-                              </div>
-                            ) : (
-                              // Confirmed and game played
-                              bet.confirmed_bet.outcome === null ? (
-                                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
-                                  <span style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)', fontWeight: '600' }}>
-                                    Settle ({bet.confirmed_bet.wager_type.toUpperCase()}):
-                                  </span>
-                                  <div style={{ display: 'flex', gap: '4px' }}>
-                                    <button
-                                      onClick={() => handleSettleBet(bet, 'won')}
-                                      className="select-input"
-                                      style={{
-                                        padding: '2px 6px',
-                                        fontSize: '0.65rem',
-                                        fontWeight: '700',
-                                        background: 'var(--neon-emerald)',
-                                        color: '#fff',
-                                        border: 'none',
-                                        borderRadius: '4px',
-                                        cursor: 'pointer'
-                                      }}
-                                    >
-                                      Won (Yes)
-                                    </button>
-                                    <button
-                                      onClick={() => handleSettleBet(bet, 'lost')}
-                                      className="select-input"
-                                      style={{
-                                        padding: '2px 6px',
-                                        fontSize: '0.65rem',
-                                        fontWeight: '700',
-                                        background: 'var(--neon-rose)',
-                                        color: '#fff',
-                                        border: 'none',
-                                        borderRadius: '4px',
-                                        cursor: 'pointer'
-                                      }}
-                                    >
-                                      Lost (No)
-                                    </button>
-                                  </div>
-                                </div>
-                              ) : (
-                                // Settled
-                                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
-                                  <span className="badge" style={{
-                                    background: bet.confirmed_bet.outcome === 'won' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(244, 63, 94, 0.15)',
-                                    borderColor: bet.confirmed_bet.outcome === 'won' ? 'var(--neon-emerald)' : 'var(--neon-rose)',
-                                    color: bet.confirmed_bet.outcome === 'won' ? 'var(--neon-emerald)' : 'var(--neon-rose)',
-                                    fontSize: '0.7rem',
-                                    fontWeight: '700',
-                                    padding: '2px 6px'
-                                  }}>
-                                    {bet.confirmed_bet.outcome.toUpperCase()}
-                                  </span>
-                                  <span style={{ fontSize: '0.75rem', fontWeight: '700', color: bet.confirmed_bet.bankroll_change >= 0 ? 'var(--neon-emerald)' : 'var(--neon-rose)' }}>
-                                    {bet.confirmed_bet.bankroll_change >= 0 ? '+' : ''}${bet.confirmed_bet.bankroll_change.toFixed(2)}
-                                  </span>
-                                  <button
-                                    onClick={() => handleDeleteBet(bet)}
-                                    className="select-input"
-                                    style={{
-                                      padding: '2px 6px',
-                                      fontSize: '0.65rem',
-                                      background: 'rgba(255, 255, 255, 0.05)',
-                                      color: 'var(--color-text-muted)',
-                                      border: '1px solid var(--border-card)',
-                                      borderRadius: '4px',
-                                      cursor: 'pointer'
-                                    }}
-                                  >
-                                    Reset
-                                  </button>
-                                </div>
-                              )
-                            )
-                          )}
-                        </td>
+
                         <td>
                           <button
                             onClick={() => toggleExpand(idx)}
@@ -689,7 +444,7 @@ export default function UpcomingBets() {
                       {/* Collapsible details for health & injury impacts */}
                       {isExpanded && (
                         <tr>
-                          <td colSpan="11" style={{ background: 'rgba(255, 255, 255, 0.01)', padding: '16px 24px' }}>
+                          <td colSpan="10" style={{ background: 'rgba(255, 255, 255, 0.01)', padding: '16px 24px' }}>
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
 
                               {/* Home Team Health Detail */}

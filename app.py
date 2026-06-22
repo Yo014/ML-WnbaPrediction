@@ -185,25 +185,6 @@ def init_app_data():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
-    # Ensure confirmed_bets table is created on startup
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS confirmed_bets (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        match_date TEXT NOT NULL,
-        home_team TEXT NOT NULL,
-        away_team TEXT NOT NULL,
-        recommended_side TEXT,
-        wager_type TEXT NOT NULL,
-        wager_amount REAL NOT NULL,
-        odds REAL NOT NULL,
-        outcome TEXT,
-        bankroll_change REAL,
-        confirmed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE (match_date, home_team, away_team)
-    );
-    """)
-    conn.commit()
-    
     # 1. Fetch all teams
     cursor.execute("SELECT DISTINCT Team FROM player_stats WHERE Season = 2026 ORDER BY Team")
     ALL_TEAMS = [r[0] for r in cursor.fetchall() if r[0]]
@@ -793,23 +774,6 @@ def get_upcoming_bets():
             last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
-        
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS confirmed_bets (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            match_date TEXT NOT NULL,
-            home_team TEXT NOT NULL,
-            away_team TEXT NOT NULL,
-            recommended_side TEXT,
-            wager_type TEXT NOT NULL,
-            wager_amount REAL NOT NULL,
-            odds REAL NOT NULL,
-            outcome TEXT,
-            bankroll_change REAL,
-            confirmed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE (match_date, home_team, away_team)
-        );
-        """)
         conn.commit()
         
         # Fetch live FanDuel odds
@@ -842,42 +806,12 @@ def get_upcoming_bets():
         """, (today_str,))
         poly_rows = cursor.fetchall()
         
-        # Get all confirmed bets
-        cursor.execute("""
-            SELECT 
-                id, match_date, home_team, away_team, recommended_side, 
-                wager_type, wager_amount, odds, outcome, bankroll_change, confirmed_at
-            FROM confirmed_bets
-        """)
-        confirmed_rows = cursor.fetchall()
-        
-        # Map confirmed bets
-        confirmed_map = {}
-        for crow in confirmed_rows:
-            key = (crow[1], crow[2], crow[3])
-            confirmed_map[key] = {
-                'id': crow[0],
-                'match_date': crow[1],
-                'home_team': crow[2],
-                'away_team': crow[3],
-                'recommended_side': crow[4],
-                'wager_type': crow[5],
-                'wager_amount': crow[6],
-                'odds': crow[7],
-                'outcome': crow[8],
-                'bankroll_change': crow[9],
-                'confirmed_at': crow[10]
-            }
-            
-        # Combine active polymarket matches and unsettled past confirmed bets
+        # Combine active polymarket matchups
         combined_matchups = []
-        seen_keys = set()
         
         # 1. Add active/upcoming games from polymarket_odds
         for row in poly_rows:
             match_date, home_abbr, away_abbr, home_yes_price, away_yes_price, volume = row
-            key = (match_date, home_abbr, away_abbr)
-            seen_keys.add(key)
             combined_matchups.append({
                 'match_date': match_date,
                 'home_abbr': home_abbr,
@@ -885,23 +819,8 @@ def get_upcoming_bets():
                 'home_yes_price': home_yes_price,
                 'away_yes_price': away_yes_price,
                 'volume': volume,
-                'confirmed_bet': confirmed_map.get(key)
+                'confirmed_bet': None
             })
-            
-        # 2. Add past unsettled confirmed bets so they can be settled
-        for key, cb in confirmed_map.items():
-            if cb['outcome'] is None and cb['match_date'] < today_str:
-                if key not in seen_keys:
-                    seen_keys.add(key)
-                    combined_matchups.append({
-                        'match_date': cb['match_date'],
-                        'home_abbr': cb['home_team'],
-                        'away_abbr': cb['away_team'],
-                        'home_yes_price': 0.5,
-                        'away_yes_price': 0.5,
-                        'volume': 0.0,
-                        'confirmed_bet': cb
-                    })
                     
         # Sort combined matchups chronologically
         combined_matchups.sort(key=lambda x: x['match_date'])
@@ -1057,278 +976,7 @@ def get_upcoming_bets():
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/api/confirmed_bets')
-def get_confirmed_bets():
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT id, match_date, home_team, away_team, recommended_side, wager_type, wager_amount, odds, outcome, bankroll_change
-            FROM confirmed_bets
-        """)
-        rows = cursor.fetchall()
-        conn.close()
-        
-        bets = []
-        for r in rows:
-            bets.append({
-                'id': r[0],
-                'match_date': r[1],
-                'home_team': r[2],
-                'away_team': r[3],
-                'recommended_side': r[4],
-                'wager_type': r[5],
-                'wager_amount': r[6],
-                'odds': r[7],
-                'outcome': r[8],
-                'bankroll_change': r[9]
-            })
-        return jsonify(bets)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
 
-
-def normalize_to_db_abbr(team_name):
-    if not team_name:
-        return ""
-    
-    # Map full name to abbr using TEAM_MAP if it exists
-    TEAM_MAP = {
-        'Indiana Fever': 'IND',
-        'Chicago Sky': 'CHI',
-        'Las Vegas Aces': 'LVA',
-        'New York Liberty': 'NYL',
-        'Seattle Storm': 'SEA',
-        'Minnesota Lynx': 'MIN',
-        'Phoenix Mercury': 'PHO',
-        'Dallas Wings': 'DAL',
-        'Atlanta Dream': 'ATL',
-        'Connecticut Sun': 'CON',
-        'Los Angeles Sparks': 'LAS',
-        'Washington Mystics': 'WAS',
-        'Golden State Valkyries': 'GSV',
-        'Portland Fire': 'PDX'
-    }
-    
-    # Check if team_name matches or is a substring of any full name keys
-    for fullname, abbr in TEAM_MAP.items():
-        if fullname.lower() == team_name.lower() or fullname.lower() in team_name.lower() or team_name.lower() in fullname.lower():
-            return abbr
-            
-    # If it is an abbreviation already:
-    abbr = team_name.upper()
-    if abbr == 'PHX':
-        return 'PHO'
-    if abbr == 'GS':
-        return 'GSV'
-    if abbr == 'POR' or abbr == 'PTF':
-        return 'PDX'
-    if abbr == 'TOT':
-        return 'TOR'
-    return abbr
-
-@app.route('/api/confirm_bet', methods=['POST'])
-def confirm_bet():
-    try:
-        data = request.get_json() or {}
-        match_date = data.get('match_date')
-        home_team = data.get('home_team')
-        away_team = data.get('away_team')
-        recommended_side = data.get('recommended_side')
-        wager_type = data.get('wager_type')
-        wager_amount = data.get('wager_amount')
-        odds = data.get('odds')
-        
-        if not match_date or not home_team or not away_team or wager_type is None or wager_amount is None or odds is None:
-            return jsonify({'error': 'Missing required fields: match_date, home_team, away_team, wager_type, wager_amount, odds'}), 400
-            
-        home_db = normalize_to_db_abbr(home_team)
-        away_db = normalize_to_db_abbr(away_team)
-        
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        
-        # Ensure confirmed_bets table exists (fallback)
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS confirmed_bets (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            match_date TEXT NOT NULL,
-            home_team TEXT NOT NULL,
-            away_team TEXT NOT NULL,
-            recommended_side TEXT,
-            wager_type TEXT NOT NULL,
-            wager_amount REAL NOT NULL,
-            odds REAL NOT NULL,
-            outcome TEXT,
-            bankroll_change REAL,
-            confirmed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE (match_date, home_team, away_team)
-        );
-        """)
-        
-        # Check if a bet already exists for this matchup
-        cursor.execute("""
-            SELECT id FROM confirmed_bets 
-            WHERE match_date = ? AND home_team = ? AND away_team = ?
-        """, (match_date, home_db, away_db))
-        existing = cursor.fetchone()
-        
-        if existing:
-            # Update existing bet, preserving outcome and bankroll_change if they already exist
-            cursor.execute("""
-                UPDATE confirmed_bets 
-                SET recommended_side = ?, wager_type = ?, wager_amount = ?, odds = ?
-                WHERE match_date = ? AND home_team = ? AND away_team = ?
-            """, (recommended_side, wager_type, float(wager_amount), float(odds), match_date, home_db, away_db))
-        else:
-            # Insert new bet
-            cursor.execute("""
-                INSERT INTO confirmed_bets 
-                (match_date, home_team, away_team, recommended_side, wager_type, wager_amount, odds, outcome, bankroll_change)
-                VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL)
-            """, (match_date, home_db, away_db, recommended_side, wager_type, float(wager_amount), float(odds)))
-            
-        conn.commit()
-        conn.close()
-        
-        return jsonify({'message': 'Bet confirmed successfully', 'match_date': match_date, 'home_team': home_db, 'away_team': away_db})
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/settle_bet', methods=['POST'])
-def settle_bet():
-    try:
-        data = request.get_json() or {}
-        match_date = data.get('match_date')
-        home_team = data.get('home_team')
-        away_team = data.get('away_team')
-        outcome = data.get('outcome')  # 'won', 'lost', 'void', 'push', etc.
-        bankroll_change = data.get('bankroll_change')  # optional
-        
-        if not match_date or not home_team or not away_team or not outcome:
-            return jsonify({'error': 'Missing required fields: match_date, home_team, away_team, outcome'}), 400
-            
-        home_db = normalize_to_db_abbr(home_team)
-        away_db = normalize_to_db_abbr(away_team)
-        
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        
-        # Ensure table exists
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS confirmed_bets (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            match_date TEXT NOT NULL,
-            home_team TEXT NOT NULL,
-            away_team TEXT NOT NULL,
-            recommended_side TEXT,
-            wager_type TEXT NOT NULL,
-            wager_amount REAL NOT NULL,
-            odds REAL NOT NULL,
-            outcome TEXT,
-            bankroll_change REAL,
-            confirmed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE (match_date, home_team, away_team)
-        );
-        """)
-        
-        # Find the existing bet
-        cursor.execute("""
-            SELECT wager_amount, odds FROM confirmed_bets 
-            WHERE match_date = ? AND home_team = ? AND away_team = ?
-        """, (match_date, home_db, away_db))
-        row = cursor.fetchone()
-        
-        if not row:
-            conn.close()
-            return jsonify({'error': 'Confirmed bet not found for this matchup.'}), 404
-            
-        wager_amount, odds = row
-        
-        # Calculate bankroll change if not explicitly provided
-        if bankroll_change is None:
-            outcome_lower = outcome.lower()
-            if outcome_lower == 'won':
-                bankroll_change = wager_amount * (odds - 1.0)
-            elif outcome_lower == 'lost':
-                bankroll_change = -wager_amount
-            else:
-                bankroll_change = 0.0
-        else:
-            bankroll_change = float(bankroll_change)
-            
-        cursor.execute("""
-            UPDATE confirmed_bets 
-            SET outcome = ?, bankroll_change = ?
-            WHERE match_date = ? AND home_team = ? AND away_team = ?
-        """, (outcome, bankroll_change, match_date, home_db, away_db))
-        
-        conn.commit()
-        conn.close()
-        
-        return jsonify({
-            'message': 'Bet settled successfully',
-            'match_date': match_date,
-            'home_team': home_db,
-            'away_team': away_db,
-            'outcome': outcome,
-            'bankroll_change': bankroll_change
-        })
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/delete_bet', methods=['POST'])
-def delete_bet():
-    try:
-        data = request.get_json() or {}
-        match_date = data.get('match_date')
-        home_team = data.get('home_team')
-        away_team = data.get('away_team')
-        
-        if not match_date or not home_team or not away_team:
-            return jsonify({'error': 'Missing required fields: match_date, home_team, away_team'}), 400
-            
-        home_db = normalize_to_db_abbr(home_team)
-        away_db = normalize_to_db_abbr(away_team)
-        
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        
-        # Ensure table exists
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS confirmed_bets (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            match_date TEXT NOT NULL,
-            home_team TEXT NOT NULL,
-            away_team TEXT NOT NULL,
-            recommended_side TEXT,
-            wager_type TEXT NOT NULL,
-            wager_amount REAL NOT NULL,
-            odds REAL NOT NULL,
-            outcome TEXT,
-            bankroll_change REAL,
-            confirmed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE (match_date, home_team, away_team)
-        );
-        """)
-        
-        cursor.execute("""
-            DELETE FROM confirmed_bets 
-            WHERE match_date = ? AND home_team = ? AND away_team = ?
-        """, (match_date, home_db, away_db))
-        
-        conn.commit()
-        conn.close()
-        
-        return jsonify({'message': 'Bet deleted successfully', 'match_date': match_date, 'home_team': home_db, 'away_team': away_db})
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
 
 # Run startup calculations
 init_app_data()
