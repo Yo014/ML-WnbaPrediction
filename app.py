@@ -145,6 +145,7 @@ def compute_h2h_bias(conn, home_team, away_team, date):
         SELECT Date, HomeTeam, AwayTeam, HomeScore, AwayScore
         FROM raw_matches
         WHERE Date < ? AND strftime('%Y', Date) >= ?
+          AND HomeScore >= 0 AND AwayScore >= 0
           AND ((HomeTeam = ? AND AwayTeam = ?) OR (HomeTeam = ? AND AwayTeam = ?))
     """
     cursor = conn.cursor()
@@ -190,7 +191,7 @@ def init_app_data():
     ALL_TEAMS = [r[0] for r in cursor.fetchall() if r[0]]
     
     # 2. Compute team EMAs and extract game dates
-    df_matches = pd.read_sql_query("SELECT * FROM raw_matches", conn)
+    df_matches = pd.read_sql_query("SELECT * FROM raw_matches WHERE HomeScore >= 0 AND AwayScore >= 0", conn)
     df_matches['Season'] = df_matches['Date'].str[:4].astype(int)
     
     team_games = []
@@ -273,7 +274,7 @@ def init_app_data():
         TALENT_FLOORS_2026[team] = round(sum_prev_ws, 2)
         
     # 5. Compute Crew Chief latest EMAs
-    df_ref_matches = pd.read_sql_query("SELECT Date, CrewChief, HomeScore, AwayScore, HomePF, AwayPF FROM raw_matches ORDER BY Date", conn)
+    df_ref_matches = pd.read_sql_query("SELECT Date, CrewChief, HomeScore, AwayScore, HomePF, AwayPF FROM raw_matches WHERE HomeScore >= 0 AND AwayScore >= 0 ORDER BY Date", conn)
     df_ref_matches['Game_Total_Points'] = df_ref_matches['HomeScore'] + df_ref_matches['AwayScore']
     df_ref_matches['Game_Total_Fouls'] = df_ref_matches['HomePF'] + df_ref_matches['AwayPF']
     df_ref_matches['Game_Home_Win'] = (df_ref_matches['HomeScore'] > df_ref_matches['AwayScore']).astype(float)
@@ -459,6 +460,8 @@ def auto_settle_bets(cursor):
         
         if match_row:
             home_score, away_score, actual_home_team, actual_away_team = match_row
+            if home_score < 0 or away_score < 0:
+                continue
             
             # Determine winner
             if home_score > away_score:
@@ -953,6 +956,38 @@ def confirm_bet():
             """, (match_date, home_abbr, away_abbr, recommended_side, wager_type, wager_amount, odds, -wager_amount))
             message = 'Bet confirmed successfully'
             
+        # Update raw_matches with custom odds if they are provided
+        custom_home_odds = data.get('custom_home_odds')
+        custom_away_odds = data.get('custom_away_odds')
+        
+        if custom_home_odds is not None or custom_away_odds is not None:
+            home_full = REVERSE_TEAM_MAP.get(home_abbr.upper(), home_abbr)
+            away_full = REVERSE_TEAM_MAP.get(away_abbr.upper(), away_abbr)
+            
+            # Check if record exists in raw_matches
+            cursor.execute("""
+                SELECT id FROM raw_matches 
+                WHERE Date = ? AND (
+                    (HomeTeam = ? AND AwayTeam = ?) OR
+                    (HomeTeam = ? AND AwayTeam = ?)
+                )
+            """, (match_date, home_full, away_full, away_full, home_full))
+            match_row = cursor.fetchone()
+            
+            if match_row:
+                cursor.execute("""
+                    UPDATE raw_matches
+                    SET BookieHomeOdds = ?, BookieAwayOdds = ?, IsFanduelOdds = 1
+                    WHERE id = ?
+                """, (custom_home_odds, custom_away_odds, match_row[0]))
+            else:
+                cursor.execute("""
+                    INSERT INTO raw_matches (
+                        Date, HomeTeam, AwayTeam, HomeScore, AwayScore,
+                        BookieHomeOdds, BookieAwayOdds, IsFanduelOdds
+                    ) VALUES (?, ?, ?, -1, -1, ?, ?, 1)
+                """, (match_date, home_full, away_full, custom_home_odds, custom_away_odds))
+            
         conn.commit()
         return jsonify({'message': message})
     except Exception as e:
@@ -983,6 +1018,18 @@ def delete_bet():
             DELETE FROM confirmed_bets
             WHERE match_date = ? AND home_team = ? AND away_team = ?
         """, (match_date, home_abbr, away_abbr))
+        
+        # Also clean up unplayed placeholder matches from raw_matches
+        home_full = REVERSE_TEAM_MAP.get(home_abbr.upper(), home_abbr)
+        away_full = REVERSE_TEAM_MAP.get(away_abbr.upper(), away_abbr)
+        cursor.execute("""
+            DELETE FROM raw_matches
+            WHERE Date = ? AND HomeScore = -1 AND (
+                (HomeTeam = ? AND AwayTeam = ?) OR
+                (HomeTeam = ? AND AwayTeam = ?)
+            )
+        """, (match_date, home_full, away_full, away_full, home_full))
+        
         conn.commit()
         return jsonify({'message': 'Bet deleted successfully'})
     except Exception as e:
@@ -1237,7 +1284,7 @@ def get_upcoming_bets():
             has_happened = False
             home_score = None
             away_score = None
-            if match_row:
+            if match_row and match_row[0] >= 0 and match_row[1] >= 0:
                 has_happened = True
                 home_score = match_row[0]
                 away_score = match_row[1]

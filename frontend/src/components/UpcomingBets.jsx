@@ -6,7 +6,7 @@ export default function UpcomingBets() {
     const saved = localStorage.getItem('wnba_initial_bankroll');
     return saved !== null ? Math.max(0, parseFloat(saved)) : 100;
   });
-  const [minEdgePct, setMinEdgePct] = useState(3.0); // entered as percentage, e.g. 3.0%
+  const [minEdgePct, setMinEdgePct] = useState(7.0); // entered as percentage, e.g. 7.0%
   const [flatWagerPct, setFlatWagerPct] = useState(12.0); // entered as percentage, e.g. 12.0%
   const [marketSource, setMarketSource] = useState('polymarket'); // 'polymarket' or 'bookie'
   const [customOdds, setCustomOdds] = useState(() => {
@@ -25,12 +25,12 @@ export default function UpcomingBets() {
         ...current,
         [teamSide]: val
       };
-      
+
       const updated = {
         ...prev,
         [gameKey]: nextOdds
       };
-      
+
       if (!nextOdds.home_odds && !nextOdds.away_odds) {
         delete updated[gameKey];
       }
@@ -61,6 +61,11 @@ export default function UpcomingBets() {
 
   const handleConfirmBet = async (bet, wagerType, wagerAmount, odds, recommendedSide) => {
     setError(null);
+    const gameKey = `${bet.date}_${bet.home_team_abbr}_${bet.away_team_abbr}`;
+    const custom = customOdds[gameKey];
+    const customHome = custom?.home_odds ? parseFloat(custom.home_odds) : null;
+    const customAway = custom?.away_odds ? parseFloat(custom.away_odds) : null;
+
     try {
       const res = await fetch('/api/confirm_bet', {
         method: 'POST',
@@ -72,7 +77,9 @@ export default function UpcomingBets() {
           recommended_side: recommendedSide,
           wager_type: wagerType,
           wager_amount: wagerAmount,
-          odds: odds
+          odds: odds,
+          custom_home_odds: customHome,
+          custom_away_odds: customAway
         })
       });
       if (!res.ok) {
@@ -690,9 +697,9 @@ export default function UpcomingBets() {
                           {trackedBet ? (
                             trackedBet.outcome === null ? (
                               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
-                                <span className="badge" style={{ 
-                                  background: 'rgba(245, 158, 11, 0.15)', 
-                                  borderColor: 'var(--neon-amber)', 
+                                <span className="badge" style={{
+                                  background: 'rgba(245, 158, 11, 0.15)',
+                                  borderColor: 'var(--neon-amber)',
                                   color: 'var(--neon-amber)',
                                   fontSize: '0.7rem',
                                   padding: '2px 6px'
@@ -719,9 +726,9 @@ export default function UpcomingBets() {
                               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
                                 {trackedBet.outcome.toLowerCase() === 'won' ? (
                                   <>
-                                    <span className="badge" style={{ 
-                                      background: 'rgba(16, 185, 129, 0.15)', 
-                                      borderColor: 'var(--neon-emerald)', 
+                                    <span className="badge" style={{
+                                      background: 'rgba(16, 185, 129, 0.15)',
+                                      borderColor: 'var(--neon-emerald)',
                                       color: 'var(--neon-emerald)',
                                       fontSize: '0.7rem',
                                       padding: '2px 6px'
@@ -734,9 +741,9 @@ export default function UpcomingBets() {
                                   </>
                                 ) : (
                                   <>
-                                    <span className="badge" style={{ 
-                                      background: 'rgba(244, 63, 94, 0.15)', 
-                                      borderColor: 'var(--neon-rose)', 
+                                    <span className="badge" style={{
+                                      background: 'rgba(244, 63, 94, 0.15)',
+                                      borderColor: 'var(--neon-rose)',
                                       color: 'var(--neon-rose)',
                                       fontSize: '0.7rem',
                                       padding: '2px 6px'

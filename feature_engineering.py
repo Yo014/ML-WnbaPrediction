@@ -118,7 +118,7 @@ def calculate_h2h_bias(df_matches):
 def main():
     print("Connecting to database to load matches...")
     conn = get_connection()
-    df_matches = pd.read_sql_query("SELECT * FROM raw_matches", conn)
+    df_matches = pd.read_sql_query("SELECT * FROM raw_matches WHERE HomeScore >= 0 AND AwayScore >= 0", conn)
     
     # Parse Date and add Season
     df_matches['Season'] = df_matches['Date'].str[:4].astype(int)
