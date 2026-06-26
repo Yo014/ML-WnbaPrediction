@@ -32,7 +32,7 @@ def predict_spread_and_win_prob(model, metadata, features_df):
     Predicts expected spread (mu_pred) and converts it to home win probability.
     
     Parameters:
-    - model: Trained XGBRegressor model
+    - model: Trained XGBRegressor model or dictionary containing 'regressor' and 'classifier'
     - metadata: Model metadata dictionary containing 'features' list and 'sigma_residuals'
     - features_df: pandas DataFrame containing the exact feature columns required
     
@@ -50,12 +50,22 @@ def predict_spread_and_win_prob(model, metadata, features_df):
     # Reorder/extract features to match the exact training feature order
     X = features_df[features_list]
     
-    # Predict expected point spread (Home - Away score margin)
-    mu_pred = model.predict(X)
-    
-    # Convert spread to Home Win Probability using normal CDF
-    # P(Home Win) = scipy.stats.norm.cdf(predicted_spread / sigma_residuals)
-    home_win_prob = norm.cdf(mu_pred / sigma_residuals)
+    # Check if the model is saved as an ensemble dictionary
+    if isinstance(model, dict) and 'regressor' in model and 'classifier' in model:
+        regressor = model['regressor']
+        classifier = model['classifier']
+        
+        # Predict expected point spread
+        mu_pred = regressor.predict(X)
+        
+        # Use classifier predict_proba for win probability
+        home_win_prob = classifier.predict_proba(X)[:, 1]
+    else:
+        # Predict expected point spread (Home - Away score margin)
+        mu_pred = model.predict(X)
+        
+        # Convert spread to Home Win Probability using normal CDF
+        home_win_prob = norm.cdf(mu_pred / sigma_residuals)
     
     predictions_df = pd.DataFrame({
         'predicted_spread': mu_pred,

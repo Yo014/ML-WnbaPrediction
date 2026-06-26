@@ -2,11 +2,12 @@ import React, { useState, useEffect } from 'react';
 
 // Custom lightweight SVG Line Chart for Bankroll History over time (react-19 compatible, no dependencies)
 function BankrollChart({ history, initialBankroll }) {
-  if (!history || history.length === 0) {
+  const [hoveredPoint, setHoveredPoint] = useState(null);
+
+  if (!history || history.length <= 1) {
     return <div className="text-muted" style={{ padding: '24px', textAlign: 'center' }}>No history data to display.</div>;
   }
-  const [hoveredPoint, setHoveredPoint] = useState(null);
-  
+
   // SVG dimensions
   const width = 1000;
   const height = 300;
@@ -65,9 +66,12 @@ function BankrollChart({ history, initialBankroll }) {
   const xTicks = [];
   const tickCount = Math.min(6, pointsCount);
   if (pointsCount > 0) {
+    const divisor = tickCount - 1 || 1;
     for (let i = 0; i < tickCount; i++) {
-      const idx = Math.floor((i / (tickCount - 1)) * (pointsCount - 1));
-      xTicks.push(points[idx]);
+      const idx = Math.floor((i / divisor) * (pointsCount - 1));
+      if (points[idx]) {
+        xTicks.push(points[idx]);
+      }
     }
   }
 
@@ -80,7 +84,7 @@ function BankrollChart({ history, initialBankroll }) {
             <stop offset="100%" stopColor="#6366f1" stopOpacity="0.0" />
           </linearGradient>
         </defs>
-        
+
         {/* Grid Lines */}
         {gridLines.map((line, i) => (
           <g key={i}>
@@ -133,7 +137,7 @@ function BankrollChart({ history, initialBankroll }) {
 
         {/* Gradient fill */}
         {areaD && <path d={areaD} fill="url(#chart-glow)" />}
-        
+
         {/* The bankroll history line */}
         {pathD && (
           <path
@@ -146,7 +150,7 @@ function BankrollChart({ history, initialBankroll }) {
             style={{ filter: 'drop-shadow(0px 0px 6px rgba(99, 102, 241, 0.4))' }}
           />
         )}
-        
+
         {/* X-axis line */}
         <line
           x1={paddingLeft}
@@ -155,7 +159,7 @@ function BankrollChart({ history, initialBankroll }) {
           y2={paddingTop + chartHeight}
           stroke="rgba(255, 255, 255, 0.1)"
         />
-        
+
         {/* X-axis Labels */}
         {xTicks.map((p, i) => (
           <g key={i}>
@@ -178,7 +182,7 @@ function BankrollChart({ history, initialBankroll }) {
             </text>
           </g>
         ))}
-        
+
         {/* Interactive Circle Markers */}
         {points.map((p, i) => (
           <circle
@@ -203,8 +207,8 @@ function BankrollChart({ history, initialBankroll }) {
           style={{
             position: 'absolute',
             left: `${(hoveredPoint.x / width) * 100}%`,
-            top: `${(hoveredPoint.y / height) * 100 - 110}%`,
-            transform: 'translateX(-50%)',
+            top: `${(hoveredPoint.y / height) * 100}%`,
+            transform: 'translate(-50%, -115%)',
             padding: '10px 14px',
             fontSize: '0.75rem',
             zIndex: 10,
@@ -235,10 +239,12 @@ function BankrollChart({ history, initialBankroll }) {
 export default function SimulationBacktester() {
   const [season, setSeason] = useState('2025');
   const [initialBankroll, setInitialBankroll] = useState(1000);
-  const [minEdge, setMinEdge] = useState(0); // in percent, e.g. 0 = 0%
+  const [minEdge, setMinEdge] = useState(7); // in percent, e.g. 7 = 7%
   const [wagerType, setWagerType] = useState('flat');
   const [flatWagerPct, setFlatWagerPct] = useState(2); // 2 = 2% of initial bankroll
   const [marketSource, setMarketSource] = useState('bookie');
+  const [simulateRest, setSimulateRest] = useState(false);
+  const [upcomingOnly, setUpcomingOnly] = useState(false);
 
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -253,8 +259,8 @@ export default function SimulationBacktester() {
       // Map minEdge and flatWagerPct from percent to ratio for the backend API
       const minEdgeRatio = (minEdge / 100).toFixed(4);
       const flatWagerPctRatio = (flatWagerPct / 100).toFixed(4);
-      
-      const url = `/api/simulation/run?season=${season}&initial_bankroll=${initialBankroll}&min_edge=${minEdgeRatio}&wager_type=${wagerType}&flat_wager_pct=${flatWagerPctRatio}&market_source=${marketSource}`;
+
+      const url = `/api/simulation/run?season=${season}&initial_bankroll=${initialBankroll}&min_edge=${minEdgeRatio}&wager_type=${wagerType}&flat_wager_pct=${flatWagerPctRatio}&market_source=${marketSource}&simulate_rest=${simulateRest}&upcoming_only=${upcomingOnly}`;
       const response = await fetch(url);
       if (!response.ok) {
         throw new Error(`Server returned status: ${response.status}`);
@@ -270,6 +276,13 @@ export default function SimulationBacktester() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (season !== '2026') {
+      setSimulateRest(false);
+      setUpcomingOnly(false);
+    }
+  }, [season]);
 
   useEffect(() => {
     fetchSimulation();
@@ -293,14 +306,21 @@ export default function SimulationBacktester() {
           <span className="badge">Betting Strategy Backtester</span>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '20px', alignItems: 'end' }}>
-          
+
           <div className="control-group">
             <label className="control-label" htmlFor="sim-season">Season</label>
             <select
               id="sim-season"
               className="select-input"
               value={season}
-              onChange={(e) => setSeason(e.target.value)}
+              onChange={(e) => {
+                const nextSeason = e.target.value;
+                setSeason(nextSeason);
+                if (nextSeason !== '2026') {
+                  setSimulateRest(false);
+                  setUpcomingOnly(false);
+                }
+              }}
               disabled={loading}
             >
               {seasonsList.map(yr => (
@@ -382,6 +402,72 @@ export default function SimulationBacktester() {
             </div>
           )}
 
+          <div className="control-group">
+            <label className="control-label" htmlFor="sim-simulate-rest">Rest of Season</label>
+            <div style={{ display: 'flex', alignItems: 'center', height: '38px' }}>
+              <input
+                id="sim-simulate-rest"
+                type="checkbox"
+                className="checkbox-indigo"
+                checked={simulateRest}
+                onChange={(e) => {
+                  const val = e.target.checked;
+                  setSimulateRest(val);
+                  if (val) {
+                    setUpcomingOnly(false);
+                  }
+                }}
+                disabled={loading || season !== '2026'}
+              />
+              <label
+                htmlFor="sim-simulate-rest"
+                style={{
+                  marginLeft: '10px',
+                  fontSize: '0.875rem',
+                  fontWeight: 500,
+                  color: season !== '2026' ? 'var(--color-text-dim)' : 'var(--color-text-main)',
+                  cursor: season !== '2026' ? 'not-allowed' : 'pointer',
+                  userSelect: 'none'
+                }}
+              >
+                Simulate Rest of Season
+              </label>
+            </div>
+          </div>
+
+          <div className="control-group">
+            <label className="control-label" htmlFor="sim-upcoming-only">Upcoming Games</label>
+            <div style={{ display: 'flex', alignItems: 'center', height: '38px' }}>
+              <input
+                id="sim-upcoming-only"
+                type="checkbox"
+                className="checkbox-indigo"
+                checked={upcomingOnly}
+                onChange={(e) => {
+                  const val = e.target.checked;
+                  setUpcomingOnly(val);
+                  if (val) {
+                    setSimulateRest(false);
+                  }
+                }}
+                disabled={loading || season !== '2026'}
+              />
+              <label
+                htmlFor="sim-upcoming-only"
+                style={{
+                  marginLeft: '10px',
+                  fontSize: '0.875rem',
+                  fontWeight: 500,
+                  color: season !== '2026' ? 'var(--color-text-dim)' : 'var(--color-text-main)',
+                  cursor: season !== '2026' ? 'not-allowed' : 'pointer',
+                  userSelect: 'none'
+                }}
+              >
+                Simulate Upcoming Games Only
+              </label>
+            </div>
+          </div>
+
           <div className="control-group" style={{ gridColumn: wagerType === 'kelly' ? 'span 1' : 'span 1' }}>
             <button
               onClick={fetchSimulation}
@@ -454,7 +540,7 @@ export default function SimulationBacktester() {
 
       {/* Stands and Bankroll Chart Row */}
       <div style={{ display: 'grid', gridTemplateColumns: '1.6fr 1.4fr', gap: '28px' }}>
-        
+
         {/* Bankroll Chart */}
         <div className="glass-card chart-section">
           <div className="card-title">
@@ -501,7 +587,7 @@ export default function SimulationBacktester() {
                   {standings.map((std, idx) => {
                     const diff = std.actual_wins - std.simulated_wins;
                     const diffStr = diff >= 0 ? `+${diff.toFixed(1)}` : `${diff.toFixed(1)}`;
-                    
+
                     let statusClass = 'steady';
                     let statusLabel = 'Met expectations';
                     if (diff >= 3.0) {
@@ -511,7 +597,7 @@ export default function SimulationBacktester() {
                       statusClass = 'underperforming';
                       statusLabel = 'Underperformed';
                     }
-                    
+
                     return (
                       <tr key={idx}>
                         <td style={{ fontWeight: '700' }}>{std.team}</td>
@@ -547,7 +633,7 @@ export default function SimulationBacktester() {
             <span className="badge">Quality Metrics Comparison</span>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px' }}>
-            
+
             {/* Accuracy */}
             <div className="glass-card" style={{ padding: '16px', background: 'rgba(255, 255, 255, 0.015)' }}>
               <span className="control-label" style={{ display: 'block', marginBottom: '12px' }}>Win/Loss Accuracy (%)</span>
@@ -677,10 +763,10 @@ export default function SimulationBacktester() {
               <tbody>
                 {valueBets.map((bet, idx) => {
                   const homeProbPercent = (bet.model_prob_home * 100).toFixed(1);
-                  const marketProbPercent = marketSource === 'polymarket' 
+                  const marketProbPercent = marketSource === 'polymarket'
                     ? (bet.poly_prob_home * 100).toFixed(1)
                     : (bet.bookie_prob_home * 100).toFixed(1);
-                  
+
                   return (
                     <tr key={idx}>
                       <td>{bet.date}</td>

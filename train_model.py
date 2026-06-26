@@ -5,8 +5,32 @@ import pickle
 import json
 import os
 from datetime import datetime
-from sklearn.model_selection import RandomizedSearchCV, PredefinedSplit
-from sklearn.metrics import mean_absolute_error, r2_score
+from sklearn.model_selection import RandomizedSearchCV
+from sklearn.metrics import mean_absolute_error, r2_score, log_loss
+from scipy.stats import norm
+
+class WalkForwardSeasonSplitter:
+    def __init__(self, seasons_series):
+        self.seasons = np.array(seasons_series)
+        
+    def get_n_splits(self, X=None, y=None, groups=None):
+        return 4
+        
+    def split(self, X, y=None, groups=None):
+        # Fold 1: Train 2018-2021, Validate 2022
+        # Fold 2: Train 2018-2022, Validate 2023
+        # Fold 3: Train 2018-2023, Validate 2024
+        # Fold 4: Train 2018-2024, Validate 2025
+        folds = [
+            ((2018, 2021), 2022),
+            ((2018, 2022), 2023),
+            ((2018, 2023), 2024),
+            ((2018, 2024), 2025)
+        ]
+        for train_range, val_season in folds:
+            train_idx = np.where((self.seasons >= train_range[0]) & (self.seasons <= train_range[1]))[0]
+            val_idx = np.where(self.seasons == val_season)[0]
+            yield train_idx, val_idx
 
 def train_model():
     # 1. Read the engineered dataset
@@ -21,14 +45,9 @@ def train_model():
     df = df.sort_values(by='Date').reset_index(drop=True)
     
     # 2. Define target and features
-    # Target = Home_Score - Away_Score
     df['Target'] = df['HomeScore'] - df['AwayScore']
     
-    # Confirm target aligns with Score_Diff
-    if not np.allclose(df['Target'], df['Score_Diff']):
-        print("Warning: Calculated Target does not match Score_Diff in some cases. Using calculated Target.")
-    
-    # Define features
+    # Define features (excluding referee and market features)
     features = [
         # Ratings (EMA)
         'Home_Offensive_Rating_EMA_5', 'Home_Defensive_Rating_EMA_5',
@@ -49,15 +68,8 @@ def train_model():
         'Away_Days_Rest', 'Away_Back_To_Back', 'Away_Three_In_Four',
         'Rest_Diff',
         
-        # Referee Stats (EMA)
-        'Ref_Pts_EMA', 'Ref_Fouls_EMA', 'Ref_HomeWin_EMA',
-        
         # Talent Floor
         'Home_Talent_Floor', 'Away_Talent_Floor', 'Talent_Floor_Diff',
-        
-        # Market Data
-        'BookieHomeOdds', 'BookieAwayOdds', 'OpeningSpread', 'ClosingSpread', 'OverUnder',
-        'Prob_Home',
         
         # Squad Health
         'Home_Missing_Usage_Pct', 'Away_Missing_Usage_Pct',
@@ -78,31 +90,30 @@ def train_model():
     missing_features = [f for f in features if f not in df.columns]
     if missing_features:
         raise ValueError(f"Missing features in dataset: {missing_features}")
+        
+    # 3. Prepare data for tuning on seasons 2018-2026 (split at 2026-06-01)
+    train_val_mask = df['Date'] < '2026-06-01'
+    train_val_df = df[train_val_mask].copy().reset_index(drop=True)
+    test_df = df[~train_val_mask].copy().reset_index(drop=True)
     
-    # 3. Split chronologically
-    # Train: seasons 2018 to 2024
-    # Validate: seasons 2025 to 2026
-    train_mask = df['Season'].between(2018, 2024)
-    val_mask = df['Season'].between(2025, 2026)
+    if test_df.empty:
+        raise ValueError("Held-out test set (Date >= 2026-06-01) is empty.")
+        
+    X_train_val = train_val_df[features]
+    y_reg_train_val = train_val_df['Target']
+    y_clf_train_val = (y_reg_train_val > 0).astype(int)
     
-    X_train = df.loc[train_mask, features].reset_index(drop=True)
-    y_train = df.loc[train_mask, 'Target'].reset_index(drop=True)
+    # Calculate sample weights
+    max_train_date = train_val_df['Date'].max()
+    days_diff = (pd.to_datetime(max_train_date) - pd.to_datetime(train_val_df['Date'])).dt.days
+    train_val_weights = np.maximum(0.2, np.exp(-0.000551 * days_diff)).values
     
-    X_val = df.loc[val_mask, features].reset_index(drop=True)
-    y_val = df.loc[val_mask, 'Target'].reset_index(drop=True)
+    print(f"Tuning dataset size (Date < 2026-06-01): {len(train_val_df)} matches")
+    print(f"June 2026 test set size (Date >= 2026-06-01): {len(test_df)} matches")
     
-    print(f"Train set size: {len(X_train)} matches (Seasons 2018-2024)")
-    print(f"Validation set size: {len(X_val)} matches (Seasons 2025-2026)")
+    # 4. Hyperparameter tuning using RandomizedSearchCV and Custom Splitter
+    cv_splitter = WalkForwardSeasonSplitter(train_val_df['Season'])
     
-    # Combine train and val for a custom PredefinedSplit
-    X_combined = pd.concat([X_train, X_val], ignore_index=True)
-    y_combined = pd.concat([y_train, y_val], ignore_index=True)
-    
-    # PredefinedSplit indicator: -1 for train, 0 for validation
-    split_fold = np.concatenate([np.full(len(X_train), -1), np.zeros(len(X_val))])
-    ps = PredefinedSplit(test_fold=split_fold)
-    
-    # 4. Tune XGBRegressor hyperparameters using RandomizedSearchCV
     param_distributions = {
         'max_depth': [3, 4, 5, 6, 7],
         'learning_rate': [0.01, 0.02, 0.03, 0.05, 0.1],
@@ -114,80 +125,140 @@ def train_model():
         'min_child_weight': [1, 3, 5, 10]
     }
     
-    base_xgb = xgb.XGBRegressor(objective='reg:squarederror', random_state=42, n_jobs=-1)
-    
-    print("Fine-tuning hyperparameters using RandomizedSearchCV...")
-    # Using MAE (neg_mean_absolute_error) for scoring
-    random_search = RandomizedSearchCV(
-        estimator=base_xgb,
+    print("Fine-tuning XGBRegressor...")
+    base_reg = xgb.XGBRegressor(objective='reg:squarederror', random_state=42, n_jobs=-1)
+    random_search_reg = RandomizedSearchCV(
+        estimator=base_reg,
         param_distributions=param_distributions,
-        n_iter=150,
+        n_iter=60,
         scoring='neg_mean_absolute_error',
-        cv=ps,
+        cv=cv_splitter,
         random_state=42,
         n_jobs=-1,
         verbose=1
     )
+    random_search_reg.fit(X_train_val, y_reg_train_val, sample_weight=train_val_weights)
+    best_reg = random_search_reg.best_estimator_
+    best_reg_params = random_search_reg.best_params_
+    print(f"Best Regressor Params: {best_reg_params}")
     
-    random_search.fit(X_combined, y_combined)
+    print("Fine-tuning XGBClassifier...")
+    base_clf = xgb.XGBClassifier(objective='binary:logistic', eval_metric='logloss', random_state=42, n_jobs=-1)
+    random_search_clf = RandomizedSearchCV(
+        estimator=base_clf,
+        param_distributions=param_distributions,
+        n_iter=60,
+        scoring='neg_log_loss',
+        cv=cv_splitter,
+        random_state=42,
+        n_jobs=-1,
+        verbose=1
+    )
+    random_search_clf.fit(X_train_val, y_clf_train_val, sample_weight=train_val_weights)
+    best_clf = random_search_clf.best_estimator_
+    best_clf_params = random_search_clf.best_params_
+    print(f"Best Classifier Params: {best_clf_params}")
     
-    best_model = random_search.best_estimator_
-    best_params = random_search.best_params_
-    print(f"\nBest Hyperparameters found:")
-    print(json.dumps(best_params, indent=4))
+    # 5. Evaluate on held-out June 2026 test set
+    X_test = test_df[features]
+    y_reg_test = test_df['Target']
+    y_clf_test = (y_reg_test > 0).astype(int)
     
-    # Evaluate model performance
-    y_train_pred = best_model.predict(X_train)
-    y_val_pred = best_model.predict(X_val)
+    # Regressor predictions
+    y_reg_pred = best_reg.predict(X_test)
+    reg_mae = mean_absolute_error(y_reg_test, y_reg_pred)
+    reg_accuracy = np.mean((y_reg_test > 0) == (y_reg_pred > 0)) * 100.0
     
-    train_mae = mean_absolute_error(y_train, y_train_pred)
-    train_r2 = r2_score(y_train, y_train_pred)
-    train_wl_accuracy = np.mean((y_train > 0) == (y_train_pred > 0)) * 100.0
+    # Calculate sigma of residuals on the training-validation data to convert regressor predictions to probabilities
+    y_reg_cv_pred = best_reg.predict(X_train_val)
+    residuals_cv = y_reg_train_val - y_reg_cv_pred
+    sigma_residuals_cv = float(np.std(residuals_cv))
     
-    val_mae = mean_absolute_error(y_val, y_val_pred)
-    val_r2 = r2_score(y_val, y_val_pred)
-    val_wl_accuracy = np.mean((y_val > 0) == (y_val_pred > 0)) * 100.0
+    # Probability of home win from regressor (using normal CDF)
+    y_reg_prob = norm.cdf(y_reg_pred / sigma_residuals_cv)
+    reg_logloss = log_loss(y_clf_test, y_reg_prob)
     
-    print(f"\nEvaluation Metrics:")
-    print(f"Train MAE:                 {train_mae:.4f}")
-    print(f"Train R2:                  {train_r2:.4f}")
-    print(f"Train Win/Loss Accuracy:   {train_wl_accuracy:.2f}%")
-    print(f"Validation MAE:            {val_mae:.4f}")
-    print(f"Validation R2:             {val_r2:.4f}")
-    print(f"Validation Win/Loss Acc:   {val_wl_accuracy:.2f}%")
+    # Classifier predictions
+    y_clf_prob = best_clf.predict_proba(X_test)[:, 1]
+    clf_logloss = log_loss(y_clf_test, y_clf_prob)
+    clf_accuracy = np.mean(y_clf_test == (y_clf_prob >= 0.5)) * 100.0
     
-    # 5. Compute validation residuals standard deviation
-    residuals = y_val - y_val_pred
-    sigma_residuals = float(np.std(residuals))
-    print(f"Validation Residuals Standard Deviation (sigma): {sigma_residuals:.4f}")
+    print("\n================ JUNE 2026 HELD-OUT TEST METRICS ================")
+    print(f"XGBRegressor (objective='reg:squarederror'):")
+    print(f"  MAE:                    {reg_mae:.4f}")
+    print(f"  Win/Loss Accuracy:      {reg_accuracy:.2f}%")
+    print(f"  LogLoss (implied CDF):  {reg_logloss:.4f}")
+    print(f"XGBClassifier (objective='binary:logistic'):")
+    print(f"  Win/Loss Accuracy:      {clf_accuracy:.2f}%")
+    print(f"  LogLoss:                {clf_logloss:.4f}")
+    print("================================================================")
     
-    # 6. Save the trained model to wnba_spread_model.pkl
+    # 6. Re-fit on the full historical dataset (2018-present)
+    refit_df = df.copy().reset_index(drop=True)
+    X_refit = refit_df[features]
+    y_reg_refit = refit_df['Target']
+    y_clf_refit = (y_reg_refit > 0).astype(int)
+    
+    max_refit_date = refit_df['Date'].max()
+    days_diff_refit = (pd.to_datetime(max_refit_date) - pd.to_datetime(refit_df['Date'])).dt.days
+    refit_weights = np.maximum(0.2, np.exp(-0.000551 * days_diff_refit)).values
+    
+    print(f"\nRe-fitting best estimators on entire historical dataset ({len(refit_df)} matches) using sample weights...")
+    best_reg.fit(X_refit, y_reg_refit, sample_weight=refit_weights)
+    best_clf.fit(X_refit, y_clf_refit, sample_weight=refit_weights)
+    
+    # Recalculate sigma of residuals on the re-fitted historical dataset
+    y_reg_refit_pred = best_reg.predict(X_refit)
+    refit_residuals = y_reg_refit - y_reg_refit_pred
+    sigma_residuals_refit = float(np.std(refit_residuals))
+    print(f"Re-fitted Residuals Standard Deviation (sigma): {sigma_residuals_refit:.4f}")
+    
+    # 7. Save both models as a dictionary in wnba_spread_model.pkl
     model_filename = 'wnba_spread_model.pkl'
-    print(f"Saving model to {model_filename}...")
+    print(f"Saving models to {model_filename}...")
+    ensemble_dict = {
+        'regressor': best_reg,
+        'classifier': best_clf
+    }
     with open(model_filename, 'wb') as f:
-        pickle.dump(best_model, f)
+        pickle.dump(ensemble_dict, f)
         
-    # Save the feature importances
-    importances = best_model.feature_importances_
-    feature_importances = {feat: float(imp) for feat, imp in zip(features, importances)}
-    # Sort feature importances
-    sorted_importances = sorted(feature_importances.items(), key=lambda item: item[1], reverse=True)
+    # Get feature importances
+    reg_importances = best_reg.feature_importances_
+    reg_feat_imp = sorted(
+        {feat: float(imp) for feat, imp in zip(features, reg_importances)}.items(),
+        key=lambda item: item[1],
+        reverse=True
+    )
+    clf_importances = best_clf.feature_importances_
+    clf_feat_imp = sorted(
+        {feat: float(imp) for feat, imp in zip(features, clf_importances)}.items(),
+        key=lambda item: item[1],
+        reverse=True
+    )
     
-    # 7. Save metadata to model_metadata.json
+    # 8. Save metadata to model_metadata.json
     metadata = {
         'training_timestamp': datetime.now().isoformat(),
         'features': features,
-        'best_hyperparameters': best_params,
-        'metrics': {
-            'train_mae': float(train_mae),
-            'train_r2': float(train_r2),
-            'train_wl_accuracy': float(train_wl_accuracy),
-            'val_mae': float(val_mae),
-            'val_r2': float(val_r2),
-            'val_wl_accuracy': float(val_wl_accuracy)
+        'best_hyperparameters': {
+            'regressor': best_reg_params,
+            'classifier': best_clf_params
         },
-        'sigma_residuals': sigma_residuals,
-        'feature_importances': sorted_importances[:20]  # Store top 20 features
+        'metrics': {
+            'test_june_2026': {
+                'regressor_mae': float(reg_mae),
+                'regressor_logloss': float(reg_logloss),
+                'regressor_accuracy': float(reg_accuracy),
+                'classifier_logloss': float(clf_logloss),
+                'classifier_accuracy': float(clf_accuracy)
+            }
+        },
+        'sigma_residuals': sigma_residuals_refit,
+        'feature_importances': {
+            'regressor': reg_feat_imp[:20],
+            'classifier': clf_feat_imp[:20]
+        }
     }
     
     metadata_filename = 'model_metadata.json'
@@ -195,8 +266,8 @@ def train_model():
     with open(metadata_filename, 'w') as f:
         json.dump(metadata, f, indent=4)
         
-    print("\nFeature Importances (Top 10):")
-    for feat, imp in sorted_importances[:10]:
+    print("\nFeature Importances (Top 10 Regressor):")
+    for feat, imp in reg_feat_imp[:10]:
         print(f"  {feat}: {imp:.4f}")
         
     print("\nTraining workflow complete!")

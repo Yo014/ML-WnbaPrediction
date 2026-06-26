@@ -38,7 +38,7 @@ def compute_metrics(probs, actuals):
         "log_loss": round(logloss, 4)
     }
 
-def run_simulation(season, initial_bankroll=1000.0, min_edge=0.03, wager_type='flat', flat_wager_pct=0.02, market_source='bookie'):
+def run_simulation(season, initial_bankroll=1000.0, min_edge=0.03, wager_type='flat', flat_wager_pct=0.02, market_source='bookie', simulate_rest=False, upcoming_only=False):
     """
     Runs a season simulation:
     1. Loads the XGBoost model, metadata, and ready-to-use dataset.
@@ -90,11 +90,13 @@ def run_simulation(season, initial_bankroll=1000.0, min_edge=0.03, wager_type='f
         return {"error": f"Data file is missing features: {missing_features}"}
         
     X_season = df_season[features_list]
-    predicted_spreads = model.predict(X_season)
-    
     sigma_residuals = metadata.get('sigma_residuals', 10.0)
-    # Probability of home win according to model
-    model_probs_home = norm.cdf(predicted_spreads / sigma_residuals)
+    if isinstance(model, dict) and 'regressor' in model and 'classifier' in model:
+        predicted_spreads = model['regressor'].predict(X_season)
+        model_probs_home = model['classifier'].predict_proba(X_season)[:, 1]
+    else:
+        predicted_spreads = model.predict(X_season)
+        model_probs_home = norm.cdf(predicted_spreads / sigma_residuals)
     
     actual_home_wins = (df_season['HomeScore'] > df_season['AwayScore']).astype(float)
     
@@ -109,13 +111,174 @@ def run_simulation(season, initial_bankroll=1000.0, min_edge=0.03, wager_type='f
     bookie_metrics = compute_metrics(bookie_probs_home, actual_home_wins)
     poly_metrics = compute_metrics(poly_probs_home, actual_home_wins)
     
-    # 7. Run Monte Carlo standings simulation (1,000 trials)
+    # Prepare df_combined (copy of df_season with predictions added)
+    df_combined = df_season.copy()
+    df_combined['predicted_spread'] = predicted_spreads
+    df_combined['model_prob_home'] = model_probs_home
+    
+    # 7. Fetch and simulate remaining unplayed games
+    unplayed_games = []
+    if (simulate_rest or upcoming_only) and season == 2026:
+        import sys
+        import sqlite3
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        
+        app_module = sys.modules.get('app')
+        if app_module is None:
+            import app as app_module
+            
+        today_str = datetime.now(ZoneInfo('America/New_York')).strftime('%Y-%m-%d')
+        db_path = os.path.join(base_dir, "wnba.db")
+        
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT 
+                    match_date, 
+                    home_team, 
+                    away_team
+                FROM polymarket_odds
+                WHERE match_date >= ?
+                ORDER BY match_date ASC
+            """, (today_str,))
+            poly_rows = cursor.fetchall()
+            conn.close()
+        except Exception as db_e:
+            print(f"Failed to query upcoming bets from DB: {db_e}")
+            poly_rows = []
+            
+        # Deduplicate upcoming games
+        seen_games = set()
+        upcoming_matches = []
+        for match_date, home_abbr, away_abbr in poly_rows:
+            game_key = (match_date, home_abbr, away_abbr)
+            if game_key not in seen_games:
+                seen_games.add(game_key)
+                upcoming_matches.append((match_date, home_abbr, away_abbr))
+                
+        # Fetch live FanDuel odds
+        try:
+            from fanduel_odds import fetch_fanduel_odds
+            fd_games = fetch_fanduel_odds()
+        except Exception as fd_e:
+            print("Failed to fetch live FanDuel odds in simulate_season:", fd_e)
+            fd_games = []
+            
+        active_teams = set(df_season['HomeTeam'].unique()) | set(df_season['AwayTeam'].unique())
+        
+        for date_str, home_abbr, away_abbr in upcoming_matches:
+            norm_home = app_module.normalize_team_name(home_abbr)
+            norm_away = app_module.normalize_team_name(away_abbr)
+            
+            home_team = app_module.REVERSE_TEAM_MAP.get(norm_home.upper(), norm_home)
+            away_team = app_module.REVERSE_TEAM_MAP.get(norm_away.upper(), norm_away)
+            
+            if home_team not in active_teams or away_team not in active_teams:
+                continue
+                
+            try:
+                # Always predict using model
+                pred_res = app_module.make_prediction_for_matchup(home_team, away_team, date_str)
+                pred_spread = pred_res['predicted_spread']
+                model_prob = pred_res['home_win_probability'] / 100.0
+                
+                # Check for FanDuel match
+                fd_match = None
+                for g in fd_games:
+                    g_home = g.get('home_team_full')
+                    g_away = g.get('away_team_full')
+                    if g_home == home_team and g_away == away_team:
+                        g_date = g.get('date')
+                        if g_date == date_str:
+                            fd_match = g
+                            break
+                        else:
+                            try:
+                                d1 = datetime.strptime(g_date, '%Y-%m-%d').date()
+                                d2 = datetime.strptime(date_str, '%Y-%m-%d').date()
+                                if abs((d1 - d2).days) <= 1:
+                                    fd_match = g
+                                    break
+                            except Exception:
+                                pass
+                                
+                if fd_match:
+                    bookie_home_odds = fd_match['home_odds']
+                    bookie_away_odds = fd_match['away_odds']
+                    
+                    p_home_raw = 1.0 / bookie_home_odds if bookie_home_odds > 0 else 0.5
+                    p_away_raw = 1.0 / bookie_away_odds if bookie_away_odds > 0 else 0.5
+                    sum_p = p_home_raw + p_away_raw
+                    prob_home = p_home_raw / sum_p if sum_p > 0 else 0.5
+                    
+                    opening_spread = fd_match.get('closing_spread', 0.0)
+                    closing_spread = fd_match.get('closing_spread', 0.0)
+                    over_under = fd_match.get('over_under', 160.0)
+                    is_fd = 1
+                else:
+                    # Fallback to prediction ELO-derived odds
+                    bookie_home_odds = pred_res['odds']['bookie_home_odds']
+                    bookie_away_odds = pred_res['odds']['bookie_away_odds']
+                    prob_home = pred_res['odds']['implied_prob_home'] / 100.0
+                    opening_spread = pred_res['odds']['opening_spread']
+                    closing_spread = pred_res['odds']['closing_spread']
+                    over_under = pred_res['odds']['over_under']
+                    is_fd = 0
+                    
+                # Simulate outcome
+                sim_margin = np.random.normal(loc=pred_spread, scale=sigma_residuals)
+                sim_home_score = int(round((over_under + sim_margin) / 2.0))
+                sim_away_score = int(round(over_under - sim_home_score))
+                
+                if sim_margin > 0:
+                    if sim_home_score <= sim_away_score:
+                        sim_home_score = sim_away_score + 1
+                else:
+                    if sim_away_score <= sim_home_score:
+                        sim_away_score = sim_home_score + 1
+                        
+                unplayed_games.append({
+                    'Date': date_str,
+                    'HomeTeam': home_team,
+                    'AwayTeam': away_team,
+                    'HomeScore': sim_home_score,
+                    'AwayScore': sim_away_score,
+                    'Prob_Home': prob_home,
+                    'Poly_Prob_Home': np.nan,
+                    'BookieHomeOdds': bookie_home_odds,
+                    'BookieAwayOdds': bookie_away_odds,
+                    'OpeningSpread': opening_spread,
+                    'ClosingSpread': closing_spread,
+                    'OverUnder': over_under,
+                    'predicted_spread': pred_spread,
+                    'model_prob_home': model_prob,
+                    'IsFanduelOdds': is_fd,
+                    'Season': 2026
+                })
+            except Exception as pred_e:
+                print(f"Prediction failed for matchup {home_team} vs {away_team} on {date_str}: {pred_e}")
+                    
+    if upcoming_only:
+        if len(unplayed_games) == 0:
+            return {"error": "No upcoming games found to simulate."}
+        df_combined = pd.DataFrame(unplayed_games)
+        df_combined = df_combined.sort_values(by='Date').reset_index(drop=True)
+    else:
+        if len(unplayed_games) > 0:
+            df_unplayed = pd.DataFrame(unplayed_games)
+            df_combined = pd.concat([df_combined, df_unplayed], ignore_index=True)
+            # Sort chronologically by date
+            df_combined = df_combined.sort_values(by='Date').reset_index(drop=True)
+            
+    # 8. Run Monte Carlo standings simulation (1,000 trials) using combined games
     np.random.seed(42)
     num_trials = 1000
-    num_games = len(df_season)
+    num_games = len(df_combined)
     
     # Get all unique teams in this season
-    teams = sorted(list(set(df_season['HomeTeam'].unique()) | set(df_season['AwayTeam'].unique())))
+    teams = sorted(list(set(df_combined['HomeTeam'].unique()) | set(df_combined['AwayTeam'].unique())))
     team_to_idx = {team: i for i, team in enumerate(teams)}
     num_teams = len(teams)
     
@@ -123,12 +286,13 @@ def run_simulation(season, initial_bankroll=1000.0, min_edge=0.03, wager_type='f
     trial_wins = np.zeros((num_trials, num_teams), dtype=int)
     
     # Vectorized Monte Carlo simulation
+    model_probs_home_combined = df_combined['model_prob_home'].values
     draws = np.random.rand(num_trials, num_games)
-    home_wins = (draws < model_probs_home).astype(int)
+    home_wins = (draws < model_probs_home_combined).astype(int)
     
     # Map games to team indices
-    home_team_indices = np.array([team_to_idx[team] for team in df_season['HomeTeam']])
-    away_team_indices = np.array([team_to_idx[team] for team in df_season['AwayTeam']])
+    home_team_indices = np.array([team_to_idx[team] for team in df_combined['HomeTeam']])
+    away_team_indices = np.array([team_to_idx[team] for team in df_combined['AwayTeam']])
     
     # Accumulate wins for each team across trials
     for t in range(num_trials):
@@ -139,7 +303,7 @@ def run_simulation(season, initial_bankroll=1000.0, min_edge=0.03, wager_type='f
     actual_wins = {team: 0 for team in teams}
     actual_losses = {team: 0 for team in teams}
     
-    for _, row in df_season.iterrows():
+    for _, row in df_combined.iterrows():
         home = row['HomeTeam']
         away = row['AwayTeam']
         if row['HomeScore'] > row['AwayScore']:
@@ -156,7 +320,7 @@ def run_simulation(season, initial_bankroll=1000.0, min_edge=0.03, wager_type='f
         mean_sim_wins = float(np.mean(sim_wins_for_team))
         
         # Calculate total games played by the team in this season
-        total_games = df_season[(df_season['HomeTeam'] == team) | (df_season['AwayTeam'] == team)].shape[0]
+        total_games = df_combined[(df_combined['HomeTeam'] == team) | (df_combined['AwayTeam'] == team)].shape[0]
         mean_sim_losses = total_games - mean_sim_wins
         
         standings.append({
@@ -169,7 +333,7 @@ def run_simulation(season, initial_bankroll=1000.0, min_edge=0.03, wager_type='f
         
     standings = sorted(standings, key=lambda x: (-x['actual_wins'], -x['simulated_wins']))
     
-    # 8. Run Betting Simulation
+    # 9. Run Betting Simulation using combined games
     bankroll = float(initial_bankroll)
     bankroll_history = [{"date": "Start", "bankroll": bankroll, "cumulative_profit": 0.0}]
     
@@ -178,7 +342,7 @@ def run_simulation(season, initial_bankroll=1000.0, min_edge=0.03, wager_type='f
     total_amount_wagered = 0.0
     
     games = []
-    for i, row in df_season.iterrows():
+    for i, row in df_combined.iterrows():
         home = row['HomeTeam']
         away = row['AwayTeam']
         home_score = int(row['HomeScore'])
@@ -218,7 +382,7 @@ def run_simulation(season, initial_bankroll=1000.0, min_edge=0.03, wager_type='f
                     odds_away = 1.0 / p_away_market
                     
         # Model predictions
-        model_prob_home = float(model_probs_home[i])
+        model_prob_home = float(row['model_prob_home'])
         model_prob_away = 1.0 - model_prob_home
         model_predicted_winner = home if model_prob_home >= 0.5 else away
         
@@ -294,7 +458,7 @@ def run_simulation(season, initial_bankroll=1000.0, min_edge=0.03, wager_type='f
             "away_team": away,
             "home_score": home_score,
             "away_score": away_score,
-            "predicted_spread": round(float(predicted_spreads[i]), 2),
+            "predicted_spread": round(float(row['predicted_spread']), 2),
             "model_prob_home": round(model_prob_home, 4),
             "bookie_prob_home": round(float(row['Prob_Home']), 4) if not pd.isna(row['Prob_Home']) else None,
             "poly_prob_home": round(float(row['Poly_Prob_Home']), 4) if not pd.isna(row['Poly_Prob_Home']) else None,
@@ -308,7 +472,8 @@ def run_simulation(season, initial_bankroll=1000.0, min_edge=0.03, wager_type='f
             "bet_odds": round(bet_odds, 2) if bet_placed and bet_odds is not None else None,
             "bet_win": bet_win,
             "bet_payout": bet_payout if bet_placed else None,
-            "bet_edge": round(bet_edge, 4) if bet_placed else None
+            "bet_edge": round(bet_edge, 4) if bet_placed else None,
+            "is_fanduel_odds": int(row['IsFanduelOdds']) if 'IsFanduelOdds' in row and not pd.isna(row['IsFanduelOdds']) else 0
         })
         
     betting_metrics = {

@@ -40,6 +40,7 @@ TALENT_FLOORS_2026 = {}
 LATEST_REF_EMAS = {}
 GLOBAL_REF_DEFAULTS = {}
 LATEST_ELOS = {}
+WNBA_2026_SCHEDULE = None
 
 REVERSE_TEAM_MAP = {
     'IND': 'Indiana Fever',
@@ -172,6 +173,7 @@ def init_app_data():
     """Performs all startup calculations and caches values in memory."""
     global MODEL, METADATA, ALL_TEAMS, LATEST_TEAM_EMAS, OVERALL_EMA_MEANS
     global TALENT_FLOORS_2026, LATEST_REF_EMAS, GLOBAL_REF_DEFAULTS, LATEST_ELOS
+    global WNBA_2026_SCHEDULE
     
     # Load model and metadata
     if not os.path.exists(MODEL_PATH) or not os.path.exists(METADATA_PATH):
@@ -295,6 +297,16 @@ def init_app_data():
         'Ref_HomeWin_EMA': float(df_ref_matches['Game_Home_Win'].mean())
     }
     
+    # Fetch and cache WNBA 2026 schedule
+    try:
+        from nba_api.stats.endpoints import scheduleleaguev2
+        sched_endpoint = scheduleleaguev2.ScheduleLeagueV2(league_id='10', season='2026')
+        WNBA_2026_SCHEDULE = sched_endpoint.get_data_frames()[0]
+        print("Successfully fetched WNBA 2026 schedule.")
+    except Exception as e:
+        print(f"Gracefully failed to fetch WNBA 2026 schedule: {e}")
+        WNBA_2026_SCHEDULE = None
+
     conn.close()
     print("Application data precalculations completed successfully.")
 
@@ -360,6 +372,8 @@ def run_simulation():
     wager_type = request.args.get('wager_type', 'flat')
     flat_wager_pct_val = request.args.get('flat_wager_pct', '0.02')
     market_source = request.args.get('market_source', 'bookie')
+    simulate_rest_val = request.args.get('simulate_rest', 'false')
+    upcoming_only_val = request.args.get('upcoming_only', 'false')
     
     try:
         season = int(season_val)
@@ -381,13 +395,17 @@ def run_simulation():
     except ValueError:
         flat_wager_pct = 0.02
 
+    simulate_rest = simulate_rest_val.lower() == 'true'
+    upcoming_only = upcoming_only_val.lower() == 'true'
     result = simulate_season.run_simulation(
         season=season,
         initial_bankroll=initial_bankroll,
         min_edge=min_edge,
         wager_type=wager_type,
         flat_wager_pct=flat_wager_pct,
-        market_source=market_source
+        market_source=market_source,
+        simulate_rest=simulate_rest,
+        upcoming_only=upcoming_only
     )
     if "error" in result:
         return jsonify(result), 400
@@ -702,12 +720,15 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
     features_list = METADATA['features']
     features_df = pd.DataFrame([feature_dict])[features_list]
     
-    # Predict spread using XGBoost
-    predicted_spread = float(MODEL.predict(features_df)[0])
-    
-    # Calculate win probabilities using standard normal CDF
-    sigma_residuals = METADATA['sigma_residuals']
-    home_win_prob = float(norm.cdf(predicted_spread / sigma_residuals))
+    # Predict spread and win probabilities
+    if isinstance(MODEL, dict) and 'regressor' in MODEL and 'classifier' in MODEL:
+        predicted_spread = float(MODEL['regressor'].predict(features_df)[0])
+        home_win_prob = float(MODEL['classifier'].predict_proba(features_df)[0, 1])
+    else:
+        predicted_spread = float(MODEL.predict(features_df)[0])
+        sigma_residuals = METADATA['sigma_residuals']
+        home_win_prob = float(norm.cdf(predicted_spread / sigma_residuals))
+        
     away_win_prob = 1.0 - home_win_prob
     
     return {

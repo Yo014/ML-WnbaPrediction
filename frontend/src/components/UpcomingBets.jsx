@@ -1,5 +1,241 @@
 import React, { useState, useEffect } from 'react';
 
+// Custom lightweight SVG Line Chart for Bankroll History over time (react-19 compatible, no dependencies)
+function BankrollChart({ history, initialBankroll }) {
+  const [hoveredPoint, setHoveredPoint] = useState(null);
+
+  if (!history || history.length <= 1) {
+    return <div className="text-muted" style={{ padding: '24px', textAlign: 'center' }}>No settled betting history to display.</div>;
+  }
+
+  // SVG dimensions
+  const width = 1000;
+  const height = 300;
+  const paddingLeft = 70;
+  const paddingRight = 20;
+  const paddingTop = 20;
+  const paddingBottom = 45;
+  const chartWidth = width - paddingLeft - paddingRight;
+  const chartHeight = height - paddingTop - paddingBottom;
+
+  // Extract min/max values
+  const bankrolls = history.map(d => d.bankroll);
+  const minBankroll = Math.min(...bankrolls, initialBankroll);
+  const maxBankroll = Math.max(...bankrolls, initialBankroll);
+
+  // Add Y-axis padding
+  const bankrollRange = maxBankroll - minBankroll;
+  const yMin = Math.max(0, minBankroll - (bankrollRange * 0.1 || 100));
+  const yMax = maxBankroll + (bankrollRange * 0.1 || 100);
+  const yRange = yMax - yMin;
+  const pointsCount = history.length;
+
+  // Map to SVG coordinates
+  const points = history.map((d, index) => {
+    const x = paddingLeft + (index / (pointsCount - 1 || 1)) * chartWidth;
+    const y = paddingTop + chartHeight - ((d.bankroll - yMin) / (yRange || 1)) * chartHeight;
+    return { x, y, data: d, index };
+  });
+
+  // Path generator
+  let pathD = '';
+  if (points.length > 0) {
+    pathD = `M ${points[0].x} ${points[0].y} ` + points.slice(1).map(p => `L ${p.x} ${p.y}`).join(' ');
+  }
+
+  // Area path generator (closed loop for gradient background)
+  let areaD = '';
+  if (points.length > 0) {
+    areaD = `${pathD} L ${points[points.length - 1].x} ${paddingTop + chartHeight} L ${points[0].x} ${paddingTop + chartHeight} Z`;
+  }
+
+  // Break-even threshold line (initial bankroll)
+  const breakEvenY = paddingTop + chartHeight - ((initialBankroll - yMin) / (yRange || 1)) * chartHeight;
+
+  // Grid levels
+  const gridLines = [];
+  const gridCount = 5;
+  for (let i = 0; i < gridCount; i++) {
+    const ratio = i / (gridCount - 1);
+    const value = yMin + ratio * yRange;
+    const y = paddingTop + chartHeight - ratio * chartHeight;
+    gridLines.push({ y, value });
+  }
+
+  // X ticks labels (dates)
+  const xTicks = [];
+  const tickCount = Math.min(6, pointsCount);
+  if (pointsCount > 0) {
+    const divisor = tickCount - 1 || 1;
+    for (let i = 0; i < tickCount; i++) {
+      const idx = Math.floor((i / divisor) * (pointsCount - 1));
+      if (points[idx]) {
+        xTicks.push(points[idx]);
+      }
+    }
+  }
+
+  return (
+    <div style={{ position: 'relative', width: '100%' }}>
+      <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', height: 'auto', overflow: 'visible' }}>
+        <defs>
+          <linearGradient id="upcoming-chart-glow" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#6366f1" stopOpacity="0.25" />
+            <stop offset="100%" stopColor="#6366f1" stopOpacity="0.0" />
+          </linearGradient>
+        </defs>
+
+        {/* Grid Lines */}
+        {gridLines.map((line, i) => (
+          <g key={i}>
+            <line
+              x1={paddingLeft}
+              y1={line.y}
+              x2={width - paddingRight}
+              y2={line.y}
+              stroke="rgba(255, 255, 255, 0.05)"
+              strokeWidth="1"
+              strokeDasharray="4 4"
+            />
+            <text
+              x={paddingLeft - 10}
+              y={line.y + 4}
+              fill="var(--color-text-dim)"
+              fontSize="10"
+              fontWeight="600"
+              textAnchor="end"
+            >
+              ${Math.round(line.value).toLocaleString()}
+            </text>
+          </g>
+        ))}
+
+        {/* Break-even marker line */}
+        {breakEvenY >= paddingTop && breakEvenY <= paddingTop + chartHeight && (
+          <g>
+            <line
+              x1={paddingLeft}
+              y1={breakEvenY}
+              x2={width - paddingRight}
+              y2={breakEvenY}
+              stroke="rgba(245, 158, 11, 0.25)"
+              strokeWidth="1.5"
+              strokeDasharray="5 5"
+            />
+            <text
+              x={width - paddingRight}
+              y={breakEvenY - 6}
+              fill="var(--neon-amber)"
+              fontSize="9"
+              fontWeight="700"
+              textAnchor="end"
+            >
+              Initial: ${initialBankroll.toLocaleString()}
+            </text>
+          </g>
+        )}
+
+        {/* Gradient fill */}
+        {areaD && <path d={areaD} fill="url(#upcoming-chart-glow)" />}
+
+        {/* The bankroll history line */}
+        {pathD && (
+          <path
+            d={pathD}
+            fill="none"
+            stroke="var(--neon-indigo)"
+            strokeWidth="3"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            style={{ filter: 'drop-shadow(0px 0px 6px rgba(99, 102, 241, 0.4))' }}
+          />
+        )}
+
+        {/* X-axis line */}
+        <line
+          x1={paddingLeft}
+          y1={paddingTop + chartHeight}
+          x2={width - paddingRight}
+          y2={paddingTop + chartHeight}
+          stroke="rgba(255, 255, 255, 0.1)"
+        />
+
+        {/* X-axis Labels */}
+        {xTicks.map((p, i) => (
+          <g key={i}>
+            <line
+              x1={p.x}
+              y1={paddingTop + chartHeight}
+              x2={p.x}
+              y2={paddingTop + chartHeight + 6}
+              stroke="rgba(255, 255, 255, 0.2)"
+            />
+            <text
+              x={p.x}
+              y={paddingTop + chartHeight + 20}
+              fill="var(--color-text-dim)"
+              fontSize="10"
+              fontWeight="600"
+              textAnchor="middle"
+            >
+              {p.data.date === 'Start' ? 'Start' : p.data.date.substring(5)}
+            </text>
+          </g>
+        ))}
+
+        {/* Interactive Circle Markers */}
+        {points.map((p, i) => (
+          <circle
+            key={i}
+            cx={p.x}
+            cy={p.y}
+            r={hoveredPoint?.index === p.index ? 6 : 2}
+            fill={hoveredPoint?.index === p.index ? "var(--neon-purple)" : "var(--neon-indigo)"}
+            stroke="var(--bg-main)"
+            strokeWidth={hoveredPoint?.index === p.index ? 2 : 1}
+            style={{ cursor: 'pointer', transition: 'all 0.1s ease' }}
+            onMouseEnter={() => setHoveredPoint(p)}
+            onMouseLeave={() => setHoveredPoint(null)}
+          />
+        ))}
+      </svg>
+
+      {/* Tooltip Overlay */}
+      {hoveredPoint && hoveredPoint.data.date !== 'Start' && (
+        <div
+          className="glass-card"
+          style={{
+            position: 'absolute',
+            left: `${(hoveredPoint.x / width) * 100}%`,
+            top: `${(hoveredPoint.y / height) * 100}%`,
+            transform: 'translate(-50%, -115%)',
+            padding: '10px 14px',
+            fontSize: '0.75rem',
+            zIndex: 10,
+            pointerEvents: 'none',
+            border: '1px solid var(--neon-purple)',
+            background: 'rgba(11, 12, 21, 0.95)',
+            boxShadow: '0 6px 20px rgba(168, 85, 247, 0.3)',
+            borderRadius: '8px',
+            color: 'var(--color-text-main)',
+            minWidth: '150px'
+          }}
+        >
+          <div style={{ color: 'var(--color-text-dim)', fontSize: '0.7rem' }}>
+            Date: {hoveredPoint.data.date}
+          </div>
+          <div style={{ fontWeight: '700', marginTop: '2px' }}>
+            Bankroll: <span style={{ color: '#fff' }}>${hoveredPoint.data.bankroll.toLocaleString()}</span>
+          </div>
+          <div style={{ color: hoveredPoint.data.cumulative_profit >= 0 ? 'var(--neon-emerald)' : 'var(--neon-rose)', fontWeight: '600' }}>
+            Profit: {hoveredPoint.data.cumulative_profit >= 0 ? '+' : ''}${hoveredPoint.data.cumulative_profit.toLocaleString()}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function UpcomingBets() {
   // Config inputs
   const [initialBankroll, setInitialBankroll] = useState(() => {
@@ -216,6 +452,31 @@ export default function UpcomingBets() {
   const totalBets = resolvedBets.length;
   const winRate = totalBets > 0 ? ((wins / totalBets) * 100).toFixed(1) : '0.0';
 
+  const chartHistory = React.useMemo(() => {
+    const settled = confirmedBets
+      .filter(bet => bet.outcome !== null)
+      .sort((a, b) => {
+        if (a.match_date !== b.match_date) {
+          return a.match_date.localeCompare(b.match_date);
+        }
+        return (a.confirmed_at || '').localeCompare(b.confirmed_at || '') || (a.id - b.id);
+      });
+
+    const history = [{ date: 'Start', bankroll: initialBankroll, cumulative_profit: 0 }];
+    let runningBankroll = initialBankroll;
+
+    settled.forEach(bet => {
+      runningBankroll += (bet.bankroll_change || 0);
+      history.push({
+        date: bet.match_date,
+        bankroll: runningBankroll,
+        cumulative_profit: runningBankroll - initialBankroll
+      });
+    });
+
+    return history;
+  }, [confirmedBets, initialBankroll]);
+
   return (
     <div className="sim-dashboard-grid">
       {/* Live Bankroll Metrics Grid */}
@@ -260,6 +521,20 @@ export default function UpcomingBets() {
           </span>
         </div>
       </div>
+
+      {/* Bankroll Growth History Chart */}
+      <div className="glass-card chart-section" style={{ marginBottom: '16px' }}>
+        <div className="card-title">
+          <span>Bankroll Growth History</span>
+          <span className="badge" style={{ background: 'rgba(99, 102, 241, 0.15)', borderColor: 'var(--neon-indigo)', color: 'var(--neon-indigo)' }}>
+            Confirmed Bets Performance
+          </span>
+        </div>
+        <div style={{ padding: '10px 0' }}>
+          <BankrollChart history={chartHistory} initialBankroll={initialBankroll} />
+        </div>
+      </div>
+
       {/* Parameter Control Card */}
       <div className="glass-card" style={{ marginBottom: '8px' }}>
         <div className="card-title">

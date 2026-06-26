@@ -1,5 +1,5 @@
 {
-    "training_timestamp": "2026-06-22T23:26:48.609111",
+    "training_timestamp": "2026-06-26T10:58:57.862951",
     "features": [
         "Home_Offensive_Rating_EMA_5",
         "Home_Defensive_Rating_EMA_5",
@@ -36,18 +36,9 @@
         "Away_Back_To_Back",
         "Away_Three_In_Four",
         "Rest_Diff",
-        "Ref_Pts_EMA",
-        "Ref_Fouls_EMA",
-        "Ref_HomeWin_EMA",
         "Home_Talent_Floor",
         "Away_Talent_Floor",
         "Talent_Floor_Diff",
-        "BookieHomeOdds",
-        "BookieAwayOdds",
-        "OpeningSpread",
-        "ClosingSpread",
-        "OverUnder",
-        "Prob_Home",
         "Home_Missing_Usage_Pct",
         "Away_Missing_Usage_Pct",
         "Home_Missing_BPM_Pct",
@@ -70,104 +61,201 @@
         "H2H_Bias"
     ],
     "best_hyperparameters": {
-        "subsample": 0.6,
-        "reg_lambda": 20.0,
-        "reg_alpha": 0.0,
-        "n_estimators": 50,
-        "min_child_weight": 1,
-        "max_depth": 6,
-        "learning_rate": 0.05,
-        "colsample_bytree": 0.6
+        "regressor": {
+            "subsample": 0.8,
+            "reg_lambda": 10.0,
+            "reg_alpha": 0.0,
+            "n_estimators": 100,
+            "min_child_weight": 10,
+            "max_depth": 3,
+            "learning_rate": 0.05,
+            "colsample_bytree": 0.7
+        },
+        "classifier": {
+            "subsample": 0.6,
+            "reg_lambda": 10.0,
+            "reg_alpha": 0.1,
+            "n_estimators": 400,
+            "min_child_weight": 10,
+            "max_depth": 3,
+            "learning_rate": 0.02,
+            "colsample_bytree": 1.0
+        }
     },
     "metrics": {
-        "train_mae": 7.962979316711426,
-        "train_r2": 0.44940924644470215,
-        "train_wl_accuracy": 79.34173669467786,
-        "val_mae": 8.400486946105957,
-        "val_r2": 0.4518333077430725,
-        "val_wl_accuracy": 80.33980582524272
+        "test_june_2026": {
+            "regressor_mae": 10.57975959777832,
+            "regressor_logloss": 0.5995623483509471,
+            "regressor_accuracy": 69.01408450704226,
+            "classifier_logloss": 0.5998230941801459,
+            "classifier_accuracy": 66.19718309859155
+        }
     },
-    "sigma_residuals": 10.97941664929364,
-    "feature_importances": [
-        [
-            "ClosingSpread",
-            0.17372238636016846
+    "sigma_residuals": 11.597427749548162,
+    "feature_importances": {
+        "regressor": [
+            [
+                "Talent_Floor_Diff",
+                0.07103436440229416
+            ],
+            [
+                "Net_Rating_Diff_10",
+                0.07034281641244888
+            ],
+            [
+                "Home_Talent_Floor",
+                0.05134144052863121
+            ],
+            [
+                "Net_Rating_Diff_5",
+                0.039668962359428406
+            ],
+            [
+                "Away_Net_Rating_EMA_10",
+                0.02871706336736679
+            ],
+            [
+                "Away_Talent_Floor",
+                0.028116364032030106
+            ],
+            [
+                "eFG%_Diff_10",
+                0.025616846978664398
+            ],
+            [
+                "H2H_Bias",
+                0.025178369134664536
+            ],
+            [
+                "Home_Defensive_Rating_EMA_5",
+                0.022694556042551994
+            ],
+            [
+                "TOV%_Diff_10",
+                0.021766865625977516
+            ],
+            [
+                "Away_Offensive_Rating_EMA_5",
+                0.02138764224946499
+            ],
+            [
+                "TOV%_Diff_5",
+                0.021198250353336334
+            ],
+            [
+                "Away_TOV%_EMA_10",
+                0.02110564336180687
+            ],
+            [
+                "Away_eFG%_EMA_5",
+                0.020078560337424278
+            ],
+            [
+                "Home_Net_Rating_EMA_10",
+                0.01943766325712204
+            ],
+            [
+                "Home_ORB%_EMA_10",
+                0.01908494532108307
+            ],
+            [
+                "FT_Rate_Diff_10",
+                0.01899806410074234
+            ],
+            [
+                "Home_Offensive_Rating_EMA_10",
+                0.018368806689977646
+            ],
+            [
+                "Home_Defensive_Rating_EMA_10",
+                0.018298426643013954
+            ],
+            [
+                "Away_Defensive_Rating_EMA_10",
+                0.018231891095638275
+            ]
         ],
-        [
-            "Net_Rating_Diff_10",
-            0.0569785013794899
-        ],
-        [
-            "Prob_Home",
-            0.05528024211525917
-        ],
-        [
-            "BookieHomeOdds",
-            0.04983360320329666
-        ],
-        [
-            "Talent_Floor_Diff",
-            0.03834890201687813
-        ],
-        [
-            "BookieAwayOdds",
-            0.03319760039448738
-        ],
-        [
-            "Net_Rating_Diff_5",
-            0.023987824097275734
-        ],
-        [
-            "Home_Talent_Floor",
-            0.023788239806890488
-        ],
-        [
-            "OpeningSpread",
-            0.015999889001250267
-        ],
-        [
-            "eFG%_Diff_5",
-            0.015555320307612419
-        ],
-        [
-            "Away_Talent_Floor",
-            0.014156781136989594
-        ],
-        [
-            "Ref_HomeWin_EMA",
-            0.01400655135512352
-        ],
-        [
-            "Away_FT_Rate_EMA_10",
-            0.013978678733110428
-        ],
-        [
-            "Away_TOV%_EMA_5",
-            0.013718963600695133
-        ],
-        [
-            "eFG%_Diff_10",
-            0.013408467173576355
-        ],
-        [
-            "ORB%_Diff_10",
-            0.013196151703596115
-        ],
-        [
-            "Home_Net_Rating_EMA_10",
-            0.013085157610476017
-        ],
-        [
-            "Away_eFG%_EMA_10",
-            0.012860833667218685
-        ],
-        [
-            "Away_TOV%_EMA_10",
-            0.012784239836037159
-        ],
-        [
-            "Rest_Diff",
-            0.012205462902784348
+        "classifier": [
+            [
+                "Talent_Floor_Diff",
+                0.07823250442743301
+            ],
+            [
+                "Net_Rating_Diff_10",
+                0.07576461136341095
+            ],
+            [
+                "Away_Net_Rating_EMA_10",
+                0.030099160969257355
+            ],
+            [
+                "H2H_Bias",
+                0.029983004555106163
+            ],
+            [
+                "Home_Talent_Floor",
+                0.029309310019016266
+            ],
+            [
+                "eFG%_Diff_10",
+                0.025838131085038185
+            ],
+            [
+                "Away_Net_Rating_EMA_5",
+                0.025508718565106392
+            ],
+            [
+                "Net_Rating_Diff_5",
+                0.025390688329935074
+            ],
+            [
+                "Home_Offensive_Rating_EMA_10",
+                0.024008236825466156
+            ],
+            [
+                "Away_Offensive_Rating_EMA_5",
+                0.022524291649460793
+            ],
+            [
+                "Rest_Diff",
+                0.022520629689097404
+            ],
+            [
+                "Home_eFG%_EMA_10",
+                0.022001052275300026
+            ],
+            [
+                "Home_Net_Rating_EMA_10",
+                0.021943921223282814
+            ],
+            [
+                "FT_Rate_Diff_10",
+                0.0218352098017931
+            ],
+            [
+                "ORB%_Diff_5",
+                0.020601283758878708
+            ],
+            [
+                "Away_FT_Rate_EMA_5",
+                0.0204850435256958
+            ],
+            [
+                "Away_Defensive_Rating_EMA_10",
+                0.02037440426647663
+            ],
+            [
+                "Away_ORB%_EMA_5",
+                0.01977040432393551
+            ],
+            [
+                "Away_Offensive_Rating_EMA_10",
+                0.01969088800251484
+            ],
+            [
+                "eFG%_Diff_5",
+                0.019539542496204376
+            ]
         ]
-    ]
+    }
 }

@@ -186,3 +186,5 @@ The pipeline relies on several official and public endpoints to fetch real-time 
      - If FanDuel does not have lines (or games are far in the future), the pipeline falls back to ELO-derived odds using `generate_betting_data()`.
      - In `populate_db.py`, matched FanDuel odds are seeded into the database `raw_matches` table, so they are consumed by the Season Simulator & Backtester.
      - The Upcoming Bets tab displays a green `[FanDuel]` or a muted grey `[ELO]` badge next to the odds to indicate the active source.
+
+![alt text](image.png)
