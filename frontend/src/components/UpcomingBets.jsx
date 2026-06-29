@@ -762,9 +762,14 @@ export default function UpcomingBets() {
                     flatLoss = flatBetSize;
                     flatWin = flatBetSize * (activeOdds - 1.0);
 
-                    // Kelly sizing: f* = (p - price) / (1 - price)
-                    const kellyFraction = (activeEdge) / (1.0 - activePrice);
+                    // Kelly sizing: f* = (activeEdge) / (1.0 - activePrice)
+                    let kellyFraction = (activeEdge) / (1.0 - activePrice);
                     if (kellyFraction > 0) {
+                      // Apply optimal 1/10th Kelly multiplier
+                      kellyFraction = 0.10 * kellyFraction;
+                      // Apply optimal 10% bankroll cap
+                      kellyFraction = Math.min(0.10, kellyFraction);
+                      
                       kellyPct = kellyFraction * 100;
                       kellyBetSize = currentBankroll * kellyFraction;
                       kellyLoss = kellyBetSize;

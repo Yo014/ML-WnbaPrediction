@@ -1,3 +1,8 @@
+import sys
+import os
+# Append Scrapers directory to Python search path dynamically
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Scrapers'))
+
 import sqlite3
 import pandas as pd
 import numpy as np
@@ -374,6 +379,8 @@ def run_simulation():
     market_source = request.args.get('market_source', 'bookie')
     simulate_rest_val = request.args.get('simulate_rest', 'false')
     upcoming_only_val = request.args.get('upcoming_only', 'false')
+    kelly_fraction_val = request.args.get('kelly_fraction', '0.10')
+    bankroll_cap_val = request.args.get('bankroll_cap', '0.10')
     
     try:
         season = int(season_val)
@@ -394,6 +401,16 @@ def run_simulation():
         flat_wager_pct = float(flat_wager_pct_val)
     except ValueError:
         flat_wager_pct = 0.02
+        
+    try:
+        kelly_fraction = float(kelly_fraction_val)
+    except ValueError:
+        kelly_fraction = 0.10
+        
+    try:
+        bankroll_cap = float(bankroll_cap_val)
+    except ValueError:
+        bankroll_cap = 0.10
 
     simulate_rest = simulate_rest_val.lower() == 'true'
     upcoming_only = upcoming_only_val.lower() == 'true'
@@ -405,7 +422,9 @@ def run_simulation():
         flat_wager_pct=flat_wager_pct,
         market_source=market_source,
         simulate_rest=simulate_rest,
-        upcoming_only=upcoming_only
+        upcoming_only=upcoming_only,
+        kelly_fraction=kelly_fraction,
+        bankroll_cap=bankroll_cap
     )
     if "error" in result:
         return jsonify(result), 400
@@ -832,14 +851,14 @@ def upcoming_predictions():
             edge_home = model_prob_home - home_yes_price
             edge_away = model_prob_away - away_yes_price
             
-            # Kelly calculations: kelly = (p - m) / (1 - m)
+            # Optimal Kelly calculations: 1/10th Kelly, 10% Cap
             kelly_home = (model_prob_home - home_yes_price) / (1.0 - home_yes_price) if home_yes_price < 1.0 else 0.0
-            quarter_kelly_home = max(0.0, 0.25 * kelly_home)
-            quarter_kelly_home_capped = min(0.15, quarter_kelly_home)
+            quarter_kelly_home = max(0.0, 0.10 * kelly_home)
+            quarter_kelly_home_capped = min(0.10, quarter_kelly_home)
             
             kelly_away = (model_prob_away - away_yes_price) / (1.0 - away_yes_price) if away_yes_price < 1.0 else 0.0
-            quarter_kelly_away = max(0.0, 0.25 * kelly_away)
-            quarter_kelly_away_capped = min(0.15, quarter_kelly_away)
+            quarter_kelly_away = max(0.0, 0.10 * kelly_away)
+            quarter_kelly_away_capped = min(0.10, quarter_kelly_away)
             
             record = {
                 'match_date': match_date,

@@ -45,26 +45,34 @@ flowchart TD
 
 ### 🗄️ 1. Database & Ingestion
 - **[db_manager.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/db_manager.py)**: Initializes the SQLite database (`wnba.db`) and defines schemas for:
-  - `raw_matches`: Historical scores, referee crew chief, and bookmaker odds.
+  - `raw_matches`: Historical scores, actual referee crews (`CrewChief`, `HomeRef`, `AwayRef`), and bookmaker odds.
   - `player_stats`: Historic WNBA player statistics (Games Played, Minutes, Usage %, BPM, Win Shares).
-  - `injuries`: Dynamic team injury states.
+  - `historical_inactives`: Historical inactive players recorded on each game date, used for leak-free squad health tracking.
+  - `injuries`: Dynamic team injury states (fallback for upcoming matchups).
   - `polymarket_odds`: Implied YES/NO contract prices for matches.
-- **[populate_db.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/populate_db.py)**: Scrapes player stats and game logs from the WNBA NBA API endpoint, generates referee assignments, tracks ELO ratings, and fetches live FanDuel odds to seed matching matchups in `raw_matches`.
-- **[fanduel_odds.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/fanduel_odds.py)**: Scrapes WNBA scoreboard JSON feed from Action Network, parses pre-match moneylines, spreads, and totals from FanDuel (Sportsbook ID 30), and maps team abbreviations (e.g. `GS` -> `GSV`, `LA` -> `LAS`) to canonical database representations.
-- **[build_squad_health.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/build_squad_health.py)**: Compiles active team rosters and calculates team injury impact ratios (missing Usage %, missing BPM, missing Minutes) based on the current injuries table.
+- **[scrape_combined.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/scrape_combined.py)**: A high-performance, combined scraper that extracts both officiating crews and inactive player lists from the WNBA Stats API in a single round-trip per game, bypassing rate limits using User-Agent overrides and randomized request jitter.
+- **[populate_db.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/populate_db.py)**: Scrapes base player stats and game logs, tracks ELO ratings, and fetches live FanDuel odds.
+- **[fanduel_odds.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/fanduel_odds.py)**: Scrapes WNBA scoreboard JSON feed from Action Network, parsing pre-match spreads, moneylines, and totals.
+- **[build_squad_health.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/build_squad_health.py)**: Compiles active team rosters and calculates team injury impact ratios for the upcoming/current match.
 
 ### 🧪 2. Data Processing & Features
 - **[data_processing.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/data_processing.py)**: Cleans and standardizes team names, and computes game-level possessions, pace, and defensive/offensive ratings.
 - **[feature_engineering.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/feature_engineering.py)**: Builds the dataset (`ml_ready_data.csv`) by calculating chronological features including:
+  - **Start-of-Season Carry-over Regression**: Handles early-season sample size issues by regressing the starting EMA from the previous season's final values:
+    \[
+    EMA_{\text{start}} = 0.75 \cdot EMA_{\text{prev\_season\_final}} + 0.25 \cdot \mu_{\text{league\_mean\_prev\_season}}
+    \]
+  - **Chronological Global Means**: Imputes missing values using only games *prior* to the current game's date, preventing look-ahead bias.
+  - **Dynamic, Leak-Free Squad Health**: Queries the `historical_inactives` table for historical games on Date $D$ to dynamically calculate missing usage, BPM, and minutes, falling back to the active `injuries` table only for future matchups.
   - **Team EMA Ratings**: 5-game and 10-game Exponential Moving Averages of Offensive, Defensive, and Net Ratings.
   - **Four Factors EMA**: eFG%, TOV%, ORB%, and FT Rate.
   - **Talent Floor**: Roster total Win Shares from the previous season.
   - **Schedule Rest**: Days of rest, back-to-backs, and 3-in-4 game flags.
-  - **Referee EMA**: Crew Chief historical total points, fouls called, and home-win percentage.
+  - **Referee EMA**: Crew Chief, HomeRef, and AwayRef historical total points, fouls called, and home-win percentage.
   - **H2H Bias**: Home team win rate against this specific opponent over the last 2 seasons.
 
 ### 🤖 3. Machine Learning Model
-- **[train_model.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/train_model.py)**: Tunes and trains the XGBoost Regressor using a chronological split (Training: 2018–2024, Validation: 2025–2026). Saves the model (`wnba_spread_model.pkl`) and features order/standard deviation of residuals (`model_metadata.json`).
+- **[train_model.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/train_model.py)**: Tunes and trains the XGBoost Regressor (predicting spreads) and Classifier (predicting win probabilities) using a chronological split (Training: 2018–2024, Validation: 2025–2026). Re-enables referee EMA features (`Ref_Pts_EMA`, `Ref_Fouls_EMA`, `Ref_HomeWin_EMA`) alongside team and player talent stats. Saves models to `wnba_spread_model.pkl` and features/metadata to `model_metadata.json`.
 - **[predict.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/predict.py)**: Generates point spread predictions ($\mu_{\text{pred}}$) and maps them to home win probabilities ($P$) using the Normal Cumulative Distribution Function (CDF):
   \[
   P(\text{Home Win}) = \Phi\left(\frac{\mu_{\text{pred}}}{\sigma_{\text{residuals}}}\right)

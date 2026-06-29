@@ -381,7 +381,7 @@ export default function SimulationBacktester() {
               disabled={loading}
             >
               <option value="flat">Flat Betting ({flatWagerPct}% of Initial Bankroll)</option>
-              <option value="kelly">Kelly Criterion (Quarter-Kelly, 15% Cap)</option>
+              <option value="kelly">Kelly Criterion (1/10th Kelly, 10% Cap)</option>
             </select>
           </div>
 

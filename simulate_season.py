@@ -38,7 +38,7 @@ def compute_metrics(probs, actuals):
         "log_loss": round(logloss, 4)
     }
 
-def run_simulation(season, initial_bankroll=1000.0, min_edge=0.03, wager_type='flat', flat_wager_pct=0.02, market_source='bookie', simulate_rest=False, upcoming_only=False):
+def run_simulation(season, initial_bankroll=1000.0, min_edge=0.03, wager_type='flat', flat_wager_pct=0.02, market_source='bookie', simulate_rest=False, upcoming_only=False, kelly_fraction=0.10, bankroll_cap=0.10):
     """
     Runs a season simulation:
     1. Loads the XGBoost model, metadata, and ready-to-use dataset.
@@ -416,8 +416,8 @@ def run_simulation(season, initial_bankroll=1000.0, min_edge=0.03, wager_type='f
                     p_bet = model_prob_home if bet_team == home else model_prob_away
                     if bet_odds > 1.0:
                         f_star = (p_bet * bet_odds - 1.0) / (bet_odds - 1.0)
-                        kelly_frac = 0.25 * f_star # Quarter-Kelly
-                        kelly_frac = max(0.0, min(0.15, kelly_frac)) # Cap at 15%
+                        kelly_frac = kelly_fraction * f_star
+                        kelly_frac = max(0.0, min(bankroll_cap, kelly_frac))
                         bet_wager = kelly_frac * bankroll
                     else:
                         bet_wager = 0.0

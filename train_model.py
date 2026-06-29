@@ -47,7 +47,7 @@ def train_model():
     # 2. Define target and features
     df['Target'] = df['HomeScore'] - df['AwayScore']
     
-    # Define features (excluding referee and market features)
+    # Define features (including market features, excluding referee features)
     features = [
         # Ratings (EMA)
         'Home_Offensive_Rating_EMA_5', 'Home_Defensive_Rating_EMA_5',
@@ -81,7 +81,13 @@ def train_model():
         # Differentials and Bias
         'Net_Rating_Diff_5', 'eFG%_Diff_5', 'TOV%_Diff_5', 'ORB%_Diff_5', 'FT_Rate_Diff_5',
         'Net_Rating_Diff_10', 'eFG%_Diff_10', 'TOV%_Diff_10', 'ORB%_Diff_10', 'FT_Rate_Diff_10',
-        'H2H_Bias'
+        'H2H_Bias',
+        
+        # Referee Features
+        'Ref_Pts_EMA', 'Ref_Fouls_EMA', 'Ref_HomeWin_EMA',
+        
+        # Market Features
+        'BookieHomeOdds', 'BookieAwayOdds', 'OpeningSpread', 'ClosingSpread', 'OverUnder', 'Prob_Home'
     ]
     
     print(f"Total features defined: {len(features)}")

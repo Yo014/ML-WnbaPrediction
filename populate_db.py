@@ -420,9 +420,9 @@ def main():
         columns = [c[1] for c in cursor.fetchall()]
         if 'IsFanduelOdds' in columns:
             cursor.execute("""
-                SELECT Date, HomeTeam, AwayTeam, BookieHomeOdds, BookieAwayOdds, OpeningSpread, ClosingSpread, OverUnder 
+                SELECT Date, HomeTeam, AwayTeam, BookieHomeOdds, BookieAwayOdds, OpeningSpread, ClosingSpread, OverUnder, IsFanduelOdds 
                 FROM raw_matches 
-                WHERE IsFanduelOdds = 1
+                WHERE IsFanduelOdds IN (1, 2)
             """)
             for row in cursor.fetchall():
                 key = (row[0], row[1], row[2])
@@ -431,9 +431,10 @@ def main():
                     'BookieAwayOdds': row[4],
                     'OpeningSpread': row[5],
                     'ClosingSpread': row[6],
-                    'OverUnder': row[7]
+                    'OverUnder': row[7],
+                    'IsFanduelOdds': row[8]
                 }
-            print(f"Loaded {len(existing_fanduel_odds)} existing FanDuel odds records from database.")
+            print(f"Loaded {len(existing_fanduel_odds)} existing FanDuel/OddsShark odds records from database.")
         conn.close()
     except Exception as e:
         print("Failed to query existing FanDuel odds:", e)
@@ -480,7 +481,7 @@ def main():
             opening_spread = stored['OpeningSpread']
             closing_spread = stored['ClosingSpread']
             over_under = stored['OverUnder']
-            is_fanduel_odds = 1
+            is_fanduel_odds = stored.get('IsFanduelOdds', 1)
         else:
             # Check if match exists in live FanDuel odds (matching date and teams)
             fd_match = None
