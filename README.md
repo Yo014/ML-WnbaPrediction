@@ -76,19 +76,24 @@ flowchart TD
   - **H2H Bias**: Home team win rate against this specific opponent over the last 2 seasons.
 
 ### 🤖 3. Machine Learning Model
-- **[stacking_models.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/stacking_models.py)**: **[NEW]** Contains scikit-learn compatible `StackedEnsembleRegressor` and `StackedEnsembleClassifier` wrappers. Combines **XGBoost, LightGBM, CatBoost, and Ridge/LogisticRegression** using out-of-fold walk-forward cross-validation.
-- **[train_model.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/train_model.py)**: Implements the training and refitting workflow:
+- **[stacking_models.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/stacking_models.py)**: Contains scikit-learn compatible `StackedEnsembleRegressor` and `StackedEnsembleClassifier` wrappers:
+  - **StandardScaler Base Pipelines**: Automatically wraps base linear models (`Ridge` and `LogisticRegression`) inside a `StandardScaler` pipeline to ensure feature scaling consistency.
+  - **Lasso L1 Stacking Regularization**: Fits `LassoCV` as the meta-regressor and L1-penalized `LogisticRegression` (`penalty='l1'`, `solver='liblinear'`) as the meta-classifier to automatically prune noise-inducing base estimators.
+- **[train_model.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/train_model.py)**: Implements the training, feature selection, parameter search, and calibration pipeline:
+  - **Feature Selection Preprocessing**: Fits a preliminary `XGBRegressor` to compute feature importances and retains only columns with an importance score $\ge 0.002$ to reduce noise.
+  - **Dynamic Decay Optimization ($\lambda$)**: Performs grid-search optimization over exponential decay candidates $\lambda \in [0.0001, 0.002]$ within walk-forward CV splits, selecting the look-back horizon that minimizes validation Log Loss (optimal: $\lambda = 0.001$).
   - **Stage 1 (Baseline)**: Trains a baseline stacked ensemble on ELO, schedule rest, and squad health (excluding bookmaker odds) to predict raw point margins (Home - Away).
-  - **Stage 2 (Two-Stage Residual)**: Trains a stacked regressor on the full feature set (including bookmaker odds) to predict the *residual* margin relative to the bookie's `ClosingSpread`.
-  - **Quantile Volatility Model**: Trains two separate LightGBM quantile regressors at the 10th and 90th percentiles to forecast dynamic game-specific spread volatilities.
-- **[predict.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/predict.py)**: Handles inference, including chronological mean imputation for missing features:
+  - **Stage 2 (Two-Stage Residual)**: Trains a stacked regressor on the full feature set (including bookmaker odds and `'Market_Disagreement'`) to predict the *residual* margin relative to the bookie's `ClosingSpread`.
+  - **Quantile Volatility Model**: Trains two separate LightGBM quantile regressors at the 10th and 90th percentiles to forecast dynamic spread volatilities.
+  - **Platt / Isotonic Calibration**: Trains two independent `IsotonicRegression` models on out-of-fold cross-validation probabilities (`stage1_calibrator` and `stage2_calibrator`) to scale the final output win probabilities.
+- **[predict.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/predict.py)**: Handles inference, including feature mean NaN imputation and prediction routing:
   - If closing lines are available, predicts using Stage 2. Dynamic volatility standard deviation is computed from the quantiles:
     \[
     \sigma_{\text{pred}} = \frac{P_{90} - P_{10}}{2.563}
     \]
-  - Calculates win probability by blending the Normal CDF of the predicted spread/residual ($\Phi$) and the direct stacked classifier output 50/50:
+  - Calculates win probability by blending the Normal CDF of the predicted spread/residual ($\Phi$) and the direct stacked classifier output 50/50, and passes it through the fitted calibrator model:
     \[
-    P(\text{Home Win}) = 0.5 \cdot \Phi\left(\frac{\mu_{\text{pred}}}{\sigma_{\text{pred}}}\right) + 0.5 \cdot P_{\text{classifier}}
+    P(\text{Home Win}) = \text{Calibrator}\left(0.5 \cdot \Phi\left(\frac{\mu_{\text{pred}}}{\sigma_{\text{pred}}}\right) + 0.5 \cdot P_{\text{classifier}}\right)
     \]
   - If closing lines are missing (e.g. future games), routes prediction automatically to Stage 1 ELO fallback models.
 

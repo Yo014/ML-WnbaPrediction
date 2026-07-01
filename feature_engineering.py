@@ -442,6 +442,9 @@ def main():
     except Exception as e:
         print(f"Error merging Polymarket odds: {e}")
         df_matches['Poly_Prob_Home'] = np.nan
+        
+    df_matches['Poly_Prob_Home'] = df_matches['Poly_Prob_Home'].fillna(df_matches['Prob_Home'])
+    df_matches['Market_Disagreement'] = df_matches['Prob_Home'] - df_matches['Poly_Prob_Home']
     
     # 6. Differentials
     print("Calculating feature differentials (Home - Away)...")

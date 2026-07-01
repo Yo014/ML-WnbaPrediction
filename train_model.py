@@ -8,6 +8,7 @@ import os
 from datetime import datetime
 from sklearn.metrics import mean_absolute_error, log_loss
 from scipy.stats import norm
+from sklearn.isotonic import IsotonicRegression
 
 from stacking_models import StackedEnsembleRegressor, StackedEnsembleClassifier
 
@@ -33,6 +34,18 @@ class WalkForwardSeasonSplitter:
             train_idx = np.where((self.seasons >= train_range[0]) & (self.seasons <= train_range[1]))[0]
             val_idx = np.where(self.seasons == val_season)[0]
             yield train_idx, val_idx
+
+def get_walk_forward_splits(seasons_series, min_train_seasons=2):
+    seasons_arr = np.array(seasons_series)
+    unique_seasons = sorted(list(np.unique(seasons_arr)))
+    splits = []
+    for i in range(min_train_seasons, len(unique_seasons)):
+        train_seasons = unique_seasons[:i]
+        val_season = unique_seasons[i]
+        train_idx = np.where(np.isin(seasons_arr, train_seasons))[0]
+        val_idx = np.where(seasons_arr == val_season)[0]
+        splits.append((train_idx, val_idx))
+    return splits
 
 def train_model():
     # 1. Read the engineered dataset
@@ -89,10 +102,10 @@ def train_model():
         'Ref_Pts_EMA', 'Ref_Fouls_EMA', 'Ref_HomeWin_EMA',
         
         # Market Features
-        'BookieHomeOdds', 'BookieAwayOdds', 'OpeningSpread', 'ClosingSpread', 'OverUnder', 'Prob_Home'
+        'BookieHomeOdds', 'BookieAwayOdds', 'OpeningSpread', 'ClosingSpread', 'OverUnder', 'Prob_Home', 'Market_Disagreement'
     ]
     
-    market_features = ['BookieHomeOdds', 'BookieAwayOdds', 'OpeningSpread', 'ClosingSpread', 'OverUnder', 'Prob_Home']
+    market_features = ['BookieHomeOdds', 'BookieAwayOdds', 'OpeningSpread', 'ClosingSpread', 'OverUnder', 'Prob_Home', 'Market_Disagreement']
     
     baseline_features = [f for f in features if f not in market_features]
     full_features = baseline_features + market_features
@@ -125,11 +138,6 @@ def train_model():
         test_df[col] = test_df[col].fillna(mean_val)
         df[col] = df[col].fillna(mean_val)
         
-    # Calculate sample weights
-    max_train_date = train_val_df['Date'].max()
-    days_diff = (pd.to_datetime(max_train_date) - pd.to_datetime(train_val_df['Date'])).dt.days
-    train_val_weights = np.maximum(0.2, np.exp(-0.000551 * days_diff)).values
-    
     print(f"Tuning dataset size (Date < 2026-06-01): {len(train_val_df)} matches")
     print(f"June 2026 test set size (Date >= 2026-06-01): {len(test_df)} matches")
     
@@ -137,36 +145,168 @@ def train_model():
     cv_splitter = WalkForwardSeasonSplitter(train_val_df['Season'])
     cv_splits = list(cv_splitter.split(train_val_df))
     
-    # 4. Train models
-    print("\nTraining Stage 1 Stacking Models on baseline_features...")
+    # Calculate days diff for sample weights calculation
+    max_train_date = train_val_df['Date'].max()
+    days_diff = (pd.to_datetime(max_train_date) - pd.to_datetime(train_val_df['Date'])).dt.days
+    
+    # 4. Baseline Feature Selection
+    print("\nPerforming baseline feature selection using a preliminary XGBRegressor...")
+    # Use standard default decay parameter for feature importance extraction
+    prelim_weights = np.maximum(0.2, np.exp(-0.000551 * days_diff)).values
+    prelim_xgb = xgb.XGBRegressor(n_estimators=100, max_depth=4, learning_rate=0.03, random_state=42, verbosity=0)
+    prelim_xgb.fit(train_val_df[full_features], train_val_df['Target'].values, sample_weight=prelim_weights)
+    importances = prelim_xgb.feature_importances_
+    
+    selected_features = [feat for feat, imp in zip(full_features, importances) if imp >= 0.002]
+    # Fallback to avoid empty selection
+    if not selected_features:
+        selected_features = list(full_features)
+        
+    selected_baseline_features = [f for f in selected_features if f in baseline_features]
+    selected_full_features = [f for f in selected_features if f in full_features]
+    
+    print(f"Selected {len(selected_features)} features (out of {len(full_features)}) with importance >= 0.002")
+    print(f"Selected Baseline features: {len(selected_baseline_features)}")
+    print(f"Selected Full features: {len(selected_full_features)}")
+    
+    # 5. Dynamic Decay Parameter Optimization (Grid Search)
+    lambdas = [0.0001, 0.0003, 0.0005, 0.0008, 0.001, 0.0015, 0.002]
+    best_log_loss = float('inf')
+    best_lambda = None
+    best_oof_s1 = None
+    best_oof_s2 = None
+    best_oof_y = None
+    
+    for lmbda in lambdas:
+        print(f"\nEvaluating decay lambda = {lmbda}...")
+        
+        # Initialize validation arrays for out-of-fold predictions
+        oof_stage1_probs = np.zeros(len(train_val_df))
+        oof_stage2_probs = np.zeros(len(train_val_df))
+        val_indices_seen = []
+        
+        for fold_idx, (train_idx, val_idx) in enumerate(cv_splits):
+            train_fold_df = train_val_df.iloc[train_idx].copy().reset_index(drop=True)
+            
+            # Calculate weights for this training fold relative to its max date
+            max_fold_date = train_fold_df['Date'].max()
+            fold_days_diff = (pd.to_datetime(max_fold_date) - pd.to_datetime(train_fold_df['Date'])).dt.days
+            w_fold = np.maximum(0.2, np.exp(-lmbda * fold_days_diff)).values
+            
+            # Nested Walk-Forward Splits for the training fold
+            nested_splits = get_walk_forward_splits(train_fold_df['Season'], min_train_seasons=2)
+            if len(nested_splits) == 0:
+                # Fallback to simple split
+                n_samples = len(train_fold_df)
+                split_idx = int(0.8 * n_samples)
+                nested_splits = [(np.arange(split_idx), np.arange(split_idx, n_samples))]
+                
+            y_tr_reg = train_fold_df['Target'].values
+            y_tr_clf = (y_tr_reg > 0).astype(int)
+            
+            # Fit Stage 1 Models
+            fold_stage1_reg = StackedEnsembleRegressor()
+            fold_stage1_reg.fit(train_fold_df[selected_baseline_features], y_tr_reg, nested_splits, sample_weight=w_fold)
+            
+            fold_stage1_clf = StackedEnsembleClassifier()
+            fold_stage1_clf.fit(train_fold_df[selected_baseline_features], y_tr_clf, nested_splits, sample_weight=w_fold)
+            
+            # Fit Stage 2 Models
+            y_residual_tr = y_tr_reg - train_fold_df['ClosingSpread'].values
+            
+            fold_stage2_reg = StackedEnsembleRegressor()
+            fold_stage2_reg.fit(train_fold_df[selected_full_features], y_residual_tr, nested_splits, sample_weight=w_fold)
+            
+            fold_stage2_clf = StackedEnsembleClassifier()
+            fold_stage2_clf.fit(train_fold_df[selected_full_features], y_tr_clf, nested_splits, sample_weight=w_fold)
+            
+            # Fit Quantile Regressors
+            fold_q10 = lgb.LGBMRegressor(objective='quantile', alpha=0.10, random_state=42, verbose=-1)
+            fold_q10.fit(train_fold_df[selected_full_features], y_tr_reg, sample_weight=w_fold)
+            
+            fold_q90 = lgb.LGBMRegressor(objective='quantile', alpha=0.90, random_state=42, verbose=-1)
+            fold_q90.fit(train_fold_df[selected_full_features], y_tr_reg, sample_weight=w_fold)
+            
+            # Predict on val_idx
+            X_val_baseline = train_val_df.iloc[val_idx][selected_baseline_features]
+            X_val_full = train_val_df.iloc[val_idx][selected_full_features]
+            
+            # Stage 1 prediction
+            s1_prob = fold_stage1_clf.predict_proba(X_val_baseline)[:, 1]
+            oof_stage1_probs[val_idx] = s1_prob
+            
+            # Stage 2 prediction (blended)
+            s2_residual_pred = fold_stage2_reg.predict(X_val_full)
+            s2_predicted_margin = train_val_df.iloc[val_idx]['ClosingSpread'].values + s2_residual_pred
+            
+            p10_pred = fold_q10.predict(X_val_full)
+            p90_pred = fold_q90.predict(X_val_full)
+            
+            sigma_pred = (p90_pred - p10_pred) / 2.563
+            sigma_pred = np.maximum(sigma_pred, 1e-3)
+            
+            P_CDF = norm.cdf(s2_predicted_margin / sigma_pred)
+            P_Clf = fold_stage2_clf.predict_proba(X_val_full)[:, 1]
+            s2_prob = 0.5 * P_CDF + 0.5 * P_Clf
+            oof_stage2_probs[val_idx] = s2_prob
+            
+            val_indices_seen.extend(val_idx)
+            
+        val_indices_seen = sorted(list(set(val_indices_seen)))
+        y_val_clf = (train_val_df.iloc[val_indices_seen]['Target'].values > 0).astype(int)
+        
+        # Calculate Validation Log Loss of the blended Stage 2 predictions
+        loss = log_loss(y_val_clf, oof_stage2_probs[val_indices_seen])
+        print(f"Lambda = {lmbda} -> Validation Log Loss: {loss:.6f}")
+        
+        if loss < best_log_loss:
+            best_log_loss = loss
+            best_lambda = lmbda
+            best_oof_s1 = oof_stage1_probs[val_indices_seen]
+            best_oof_s2 = oof_stage2_probs[val_indices_seen]
+            best_oof_y = y_val_clf
+            
+    print(f"\nOptimal lambda: {best_lambda} (Validation Log Loss: {best_log_loss:.6f})")
+    
+    # 6. Fit Platt/Isotonic calibrators on OOF probabilities
+    print("\nFitting Isotonic Calibrators on Out-of-Fold blended probabilities...")
+    stage1_calibrator = IsotonicRegression(out_of_bounds='clip')
+    stage1_calibrator.fit(best_oof_s1, best_oof_y)
+    
+    stage2_calibrator = IsotonicRegression(out_of_bounds='clip')
+    stage2_calibrator.fit(best_oof_s2, best_oof_y)
+    
+    # 7. Train final models on train_val_df using the optimal lambda
+    print(f"\nTraining final models on entire tuning dataset (Date < 2026-06-01) with optimal decay = {best_lambda}...")
+    train_val_weights = np.maximum(0.2, np.exp(-best_lambda * days_diff)).values
     y_reg_train_val = train_val_df['Target'].values
     y_clf_train_val = (y_reg_train_val > 0).astype(int)
     
     stage1_reg = StackedEnsembleRegressor()
-    stage1_reg.fit(train_val_df[baseline_features], y_reg_train_val, cv_splits, sample_weight=train_val_weights)
+    stage1_reg.fit(train_val_df[selected_baseline_features], y_reg_train_val, cv_splits, sample_weight=train_val_weights)
     
     stage1_clf = StackedEnsembleClassifier()
-    stage1_clf.fit(train_val_df[baseline_features], y_clf_train_val, cv_splits, sample_weight=train_val_weights)
+    stage1_clf.fit(train_val_df[selected_baseline_features], y_clf_train_val, cv_splits, sample_weight=train_val_weights)
     
-    print("\nTraining Stage 2 Stacking Models (Residual & Direct Classification) on full_features...")
+    print("\nTraining Stage 2 Stacking Models on full_features...")
     y_residual_train_val = y_reg_train_val - train_val_df['ClosingSpread'].values
     
     stage2_reg = StackedEnsembleRegressor()
-    stage2_reg.fit(train_val_df[full_features], y_residual_train_val, cv_splits, sample_weight=train_val_weights)
+    stage2_reg.fit(train_val_df[selected_full_features], y_residual_train_val, cv_splits, sample_weight=train_val_weights)
     
     stage2_clf = StackedEnsembleClassifier()
-    stage2_clf.fit(train_val_df[full_features], y_clf_train_val, cv_splits, sample_weight=train_val_weights)
+    stage2_clf.fit(train_val_df[selected_full_features], y_clf_train_val, cv_splits, sample_weight=train_val_weights)
     
     print("\nTraining Stage 2 Quantile Regressors (LGBM) on full_features...")
     quantile_10 = lgb.LGBMRegressor(objective='quantile', alpha=0.10, random_state=42, verbose=-1)
-    quantile_10.fit(train_val_df[full_features], y_reg_train_val, sample_weight=train_val_weights)
+    quantile_10.fit(train_val_df[selected_full_features], y_reg_train_val, sample_weight=train_val_weights)
     
     quantile_90 = lgb.LGBMRegressor(objective='quantile', alpha=0.90, random_state=42, verbose=-1)
-    quantile_90.fit(train_val_df[full_features], y_reg_train_val, sample_weight=train_val_weights)
+    quantile_90.fit(train_val_df[selected_full_features], y_reg_train_val, sample_weight=train_val_weights)
     
-    # 5. Evaluate all models on the held-out June 2026 test set
-    X_test_baseline = test_df[baseline_features]
-    X_test_full = test_df[full_features]
+    # 8. Evaluate all models on the held-out June 2026 test set
+    X_test_baseline = test_df[selected_baseline_features]
+    X_test_full = test_df[selected_full_features]
     y_test_reg = test_df['Target'].values
     y_test_clf = (y_test_reg > 0).astype(int)
     
@@ -177,12 +317,17 @@ def train_model():
     market_accuracy = np.mean(y_test_clf == (market_prob >= 0.5)) * 100.0
     market_logloss = log_loss(y_test_clf, market_prob)
     
-    # Stage 1 Stacking
+    # Stage 1 Stacking (Uncalibrated)
     stage1_pred_margin = stage1_reg.predict(X_test_baseline)
     stage1_prob_clf = stage1_clf.predict_proba(X_test_baseline)[:, 1]
     stage1_mae = mean_absolute_error(y_test_reg, stage1_pred_margin)
     stage1_clf_accuracy = np.mean(y_test_clf == (stage1_prob_clf >= 0.5)) * 100.0
     stage1_logloss = log_loss(y_test_clf, stage1_prob_clf)
+    
+    # Stage 1 Stacking (Calibrated)
+    stage1_prob_cal = stage1_calibrator.predict(stage1_prob_clf)
+    stage1_cal_accuracy = np.mean(y_test_clf == (stage1_prob_cal >= 0.5)) * 100.0
+    stage1_cal_logloss = log_loss(y_test_clf, stage1_prob_cal)
     
     # Stage 2 Stacking & Volatility
     stage2_residual_pred = stage2_reg.predict(X_test_full)
@@ -191,46 +336,49 @@ def train_model():
     p10_pred = quantile_10.predict(X_test_full)
     p90_pred = quantile_90.predict(X_test_full)
     
-    # Volatility standard deviation: sigma_pred = (p90 - p10) / 2.563
+    # Volatility standard deviation
     sigma_pred = (p90_pred - p10_pred) / 2.563
-    sigma_pred = np.maximum(sigma_pred, 1e-3)  # Prevent division by zero
+    sigma_pred = np.maximum(sigma_pred, 1e-3)
     
-    # CDF-derived probability: P_CDF = norm.cdf(predicted_margin / sigma_pred)
     P_CDF = norm.cdf(stage2_predicted_margin / sigma_pred)
-    
-    # Stage 2 Classifier probability
     P_Clf = stage2_clf.predict_proba(X_test_full)[:, 1]
     
-    # Blend P_CDF 50/50 with Stage 2 Classifier
+    # Blend P_CDF 50/50 with Stage 2 Classifier (Uncalibrated)
     final_win_prob = 0.5 * P_CDF + 0.5 * P_Clf
-    
     stage2_mae = mean_absolute_error(y_test_reg, stage2_predicted_margin)
     stage2_clf_accuracy = np.mean(y_test_clf == (final_win_prob >= 0.5)) * 100.0
     stage2_logloss = log_loss(y_test_clf, final_win_prob)
     
-    # Print metrics table
-    print("\n" + "="*80)
-    print(f"{'MODEL EVALUATION SUMMARY (JUNE 2026 TEST SET)':^80}")
-    print("="*80)
-    print(f"{'Model / Metric':<35} | {'MAE':^12} | {'Accuracy (%)':^15} | {'Log Loss':^12}")
-    print("-"*80)
-    print(f"{'Market Baseline (Closing Lines)':<35} | {market_mae:^12.4f} | {market_accuracy:^15.2f} | {market_logloss:^12.4f}")
-    print(f"{'Stage 1 Stacking (Baseline Features)':<35} | {stage1_mae:^12.4f} | {stage1_clf_accuracy:^15.2f} | {stage1_logloss:^12.4f}")
-    print(f"{'Stage 2 Stacking (Two-Stage + Vol)':<35} | {stage2_mae:^12.4f} | {stage2_clf_accuracy:^15.2f} | {stage2_logloss:^12.4f}")
-    print("="*80)
+    # Stage 2 Stacking (Calibrated)
+    stage2_prob_cal = stage2_calibrator.predict(final_win_prob)
+    stage2_cal_accuracy = np.mean(y_test_clf == (stage2_prob_cal >= 0.5)) * 100.0
+    stage2_cal_logloss = log_loss(y_test_clf, stage2_prob_cal)
     
-    # 6. Re-fit all best estimators on the full historical dataset (2018–2026) using sample weights
+    # Print metrics table
+    print("\n" + "="*95)
+    print(f"{'MODEL EVALUATION SUMMARY (JUNE 2026 TEST SET)':^95}")
+    print("="*95)
+    print(f"{'Model / Metric':<45} | {'MAE':^12} | {'Accuracy (%)':^15} | {'Log Loss':^12}")
+    print("-"*95)
+    print(f"{'Market Baseline (Closing Lines)':<45} | {market_mae:^12.4f} | {market_accuracy:^15.2f} | {market_logloss:^12.4f}")
+    print(f"{'Stage 1 Stacking (Baseline Features, Uncal)':<45} | {stage1_mae:^12.4f} | {stage1_clf_accuracy:^15.2f} | {stage1_logloss:^12.4f}")
+    print(f"{'Stage 1 Stacking (Baseline Features, Calibrated)':<45} | {stage1_mae:^12.4f} | {stage1_cal_accuracy:^15.2f} | {stage1_cal_logloss:^12.4f}")
+    print(f"{'Stage 2 Stacking (Two-Stage + Vol, Uncal)':<45} | {stage2_mae:^12.4f} | {stage2_clf_accuracy:^15.2f} | {stage2_logloss:^12.4f}")
+    print(f"{'Stage 2 Stacking (Two-Stage + Vol, Calibrated)':<45} | {stage2_mae:^12.4f} | {stage2_cal_accuracy:^15.2f} | {stage2_cal_logloss:^12.4f}")
+    print("="*95)
+    
+    # 9. Re-fit all best estimators on the full historical dataset (2018–2026) using sample weights
     refit_df = df.copy().reset_index(drop=True)
-    X_refit_baseline = refit_df[baseline_features]
-    X_refit_full = refit_df[full_features]
+    X_refit_baseline = refit_df[selected_baseline_features]
+    X_refit_full = refit_df[selected_full_features]
     y_reg_refit = refit_df['Target'].values
     y_clf_refit = (y_reg_refit > 0).astype(int)
     
     max_refit_date = refit_df['Date'].max()
     days_diff_refit = (pd.to_datetime(max_refit_date) - pd.to_datetime(refit_df['Date'])).dt.days
-    refit_weights = np.maximum(0.2, np.exp(-0.000551 * days_diff_refit)).values
+    refit_weights = np.maximum(0.2, np.exp(-best_lambda * days_diff_refit)).values
     
-    print(f"\nRe-fitting models on entire historical dataset ({len(refit_df)} matches) using sample weights...")
+    print(f"\nRe-fitting models on entire historical dataset ({len(refit_df)} matches) using sample weights with optimal lambda = {best_lambda}...")
     cv_splitter_refit = WalkForwardSeasonSplitter(refit_df['Season'])
     cv_splits_refit = list(cv_splitter_refit.split(refit_df))
     
@@ -253,7 +401,7 @@ def train_model():
     sigma_residuals_refit = float(np.std(refit_residuals))
     print(f"Re-fitted Residuals Standard Deviation (sigma): {sigma_residuals_refit:.4f}")
     
-    # 7. Save the trained models in a dictionary structure inside wnba_spread_model.pkl
+    # 10. Save the trained models in a dictionary structure inside wnba_spread_model.pkl
     model_filename = 'wnba_spread_model.pkl'
     print(f"Saving models to {model_filename}...")
     model_dict = {
@@ -262,7 +410,9 @@ def train_model():
         'stage2_regressor': stage2_reg,
         'stage2_classifier': stage2_clf,
         'quantile_10': quantile_10,
-        'quantile_90': quantile_90
+        'quantile_90': quantile_90,
+        'stage1_calibrator': stage1_calibrator,
+        'stage2_calibrator': stage2_calibrator
     }
     with open(model_filename, 'wb') as f:
         pickle.dump(model_dict, f)
@@ -271,7 +421,7 @@ def train_model():
     try:
         reg_importances = stage2_reg.base_models_[0].feature_importances_
         reg_feat_imp = sorted(
-            {feat: float(imp) for feat, imp in zip(full_features, reg_importances)}.items(),
+            {feat: float(imp) for feat, imp in zip(selected_full_features, reg_importances)}.items(),
             key=lambda item: item[1],
             reverse=True
         )
@@ -282,7 +432,7 @@ def train_model():
     try:
         clf_importances = stage2_clf.base_models_[0].feature_importances_
         clf_feat_imp = sorted(
-            {feat: float(imp) for feat, imp in zip(full_features, clf_importances)}.items(),
+            {feat: float(imp) for feat, imp in zip(selected_full_features, clf_importances)}.items(),
             key=lambda item: item[1],
             reverse=True
         )
@@ -290,13 +440,14 @@ def train_model():
         print(f"Could not compute classifier feature importances: {e}")
         clf_feat_imp = []
         
-    # 8. Save features list and other metadata to model_metadata.json
+    # 11. Save features list and other metadata to model_metadata.json
     metadata = {
         'training_timestamp': datetime.now().isoformat(),
         'feature_means': feature_means,
-        'features': full_features,
-        'baseline_features': baseline_features,
-        'full_features': full_features,
+        'features': selected_full_features,
+        'baseline_features': selected_baseline_features,
+        'full_features': selected_full_features,
+        'optimal_decay_lambda': float(best_lambda),
         'metrics': {
             'test_june_2026': {
                 'market_mae': float(market_mae),
@@ -305,9 +456,13 @@ def train_model():
                 'stage1_mae': float(stage1_mae),
                 'stage1_accuracy': float(stage1_clf_accuracy),
                 'stage1_logloss': float(stage1_logloss),
+                'stage1_calibrated_accuracy': float(stage1_cal_accuracy),
+                'stage1_calibrated_logloss': float(stage1_cal_logloss),
                 'stage2_mae': float(stage2_mae),
                 'stage2_accuracy': float(stage2_clf_accuracy),
-                'stage2_logloss': float(stage2_logloss)
+                'stage2_logloss': float(stage2_logloss),
+                'stage2_calibrated_accuracy': float(stage2_cal_accuracy),
+                'stage2_calibrated_logloss': float(stage2_cal_logloss)
             }
         },
         'sigma_residuals': sigma_residuals_refit,

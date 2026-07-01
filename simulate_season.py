@@ -68,6 +68,7 @@ def run_simulation(season, initial_bankroll=1000.0, min_edge=0.03, wager_type='f
             model = pickle.load(f)
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
+        sigma_residuals = metadata.get('sigma_residuals', 10.0)
     except Exception as e:
         return {"error": f"Failed to load model or metadata: {str(e)}"}
         

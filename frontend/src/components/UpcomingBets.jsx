@@ -244,6 +244,7 @@ export default function UpcomingBets() {
   });
   const [minEdgePct, setMinEdgePct] = useState(7.0); // entered as percentage, e.g. 7.0%
   const [flatWagerPct, setFlatWagerPct] = useState(12.0); // entered as percentage, e.g. 12.0%
+  const [kellyCap, setKellyCap] = useState(0.10); // bankroll cap fraction, defaulting to 1/10
   const [marketSource, setMarketSource] = useState('polymarket'); // 'polymarket' or 'bookie'
   const [customOdds, setCustomOdds] = useState(() => {
     const saved = localStorage.getItem('wnba_custom_odds');
@@ -604,6 +605,26 @@ export default function UpcomingBets() {
           </div>
 
           <div className="control-group">
+            <label className="control-label" htmlFor="kelly-cap-input">Kelly Cap ({kellyCap === 1.0 ? 'No Cap' : `${Math.round(kellyCap * 100)}%`})</label>
+            <select
+              id="kelly-cap-input"
+              className="select-input"
+              value={kellyCap}
+              onChange={(e) => setKellyCap(parseFloat(e.target.value))}
+              disabled={loading || scraping}
+              style={{ width: '100%' }}
+            >
+              <option value="0.10">1/10 (10% Cap)</option>
+              <option value="0.15">15% Cap</option>
+              <option value="0.20">20% Cap</option>
+              <option value="0.25">25% Cap</option>
+              <option value="0.30">30% Cap</option>
+              <option value="0.50">50% Cap</option>
+              <option value="1.00">No Cap (100%)</option>
+            </select>
+          </div>
+
+          <div className="control-group">
             <button
               onClick={handleScrape}
               className="select-input"
@@ -765,10 +786,10 @@ export default function UpcomingBets() {
                     // Kelly sizing: f* = (activeEdge) / (1.0 - activePrice)
                     let kellyFraction = (activeEdge) / (1.0 - activePrice);
                     if (kellyFraction > 0) {
-                      // Apply optimal 1/10th Kelly multiplier
-                      kellyFraction = 0.10 * kellyFraction;
-                      // Apply optimal 10% bankroll cap
-                      kellyFraction = Math.min(0.10, kellyFraction);
+                      // Apply Kelly multiplier scaled with kellyCap
+                      kellyFraction = kellyCap * kellyFraction;
+                      // Apply bankroll cap
+                      kellyFraction = Math.min(kellyCap, kellyFraction);
                       
                       kellyPct = kellyFraction * 100;
                       kellyBetSize = currentBankroll * kellyFraction;

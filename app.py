@@ -659,6 +659,34 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
     
     # 8. Head-to-Head Bias
     h2h_bias = compute_h2h_bias(conn, home_team, away_team, prediction_date)
+    
+    # 9. Get Polymarket price for Market_Disagreement calculation
+    home_abbr = get_team_abbr(home_team)
+    away_abbr = get_team_abbr(away_team)
+    poly_prob_home = None
+    try:
+        cursor.execute("""
+            SELECT home_yes_price, match_date
+            FROM polymarket_odds 
+            WHERE home_team = ? AND away_team = ?
+        """, (home_abbr, away_abbr))
+        poly_rows = cursor.fetchall()
+        for price, m_date in poly_rows:
+            if m_date == prediction_date:
+                poly_prob_home = float(price)
+                break
+            else:
+                try:
+                    d1 = datetime.strptime(m_date, '%Y-%m-%d').date()
+                    d2 = datetime.strptime(prediction_date, '%Y-%m-%d').date()
+                    if abs((d1 - d2).days) <= 1:
+                        poly_prob_home = float(price)
+                        break
+                except Exception:
+                    pass
+    except Exception as db_err:
+        print(f"Error querying polymarket price in prediction: {db_err}")
+        
     conn.close()
     
     if fd_match:
@@ -679,6 +707,12 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
         opening_spread = odds['OpeningSpread']
         over_under = odds['OverUnder']
         prob_home = odds['Prob_Home']
+        
+    # Calculate Market_Disagreement
+    if poly_prob_home is not None:
+        market_disagreement = prob_home - poly_prob_home
+    else:
+        market_disagreement = 0.0
         
     # Recalculate Net Rating EMAs
     home_net_5 = get_ema_value(home_emas, 'Offensive_Rating_EMA_5') - get_ema_value(home_emas, 'Defensive_Rating_EMA_5')
@@ -735,6 +769,7 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
         'ClosingSpread': closing_spread,
         'OverUnder': over_under,
         'Prob_Home': prob_home,
+        'Market_Disagreement': market_disagreement,
         'Home_Missing_Usage_Pct': home_health['Missing_Usage_Pct'],
         'Away_Missing_Usage_Pct': away_health['Missing_Usage_Pct'],
         'Home_Missing_BPM_Pct': home_health['Missing_BPM_Pct'],
@@ -773,6 +808,10 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
         p_cdf = float(norm.cdf(predicted_spread / dynamic_sigma))
         p_clf = float(MODEL['stage2_classifier'].predict_proba(features_df)[0, 1])
         home_win_prob = 0.5 * p_cdf + 0.5 * p_clf
+        
+        # Apply Stage 2 calibrator
+        if 'stage2_calibrator' in MODEL and MODEL['stage2_calibrator'] is not None:
+            home_win_prob = float(MODEL['stage2_calibrator'].predict([home_win_prob])[0])
     else:
         features_list = METADATA['baseline_features']
         features_df = pd.DataFrame([feature_dict])[features_list]
@@ -784,6 +823,10 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
         p_clf = float(MODEL['stage1_classifier'].predict_proba(features_df)[0, 1])
         home_win_prob = 0.5 * p_cdf + 0.5 * p_clf
         
+        # Apply Stage 1 calibrator
+        if 'stage1_calibrator' in MODEL and MODEL['stage1_calibrator'] is not None:
+            home_win_prob = float(MODEL['stage1_calibrator'].predict([home_win_prob])[0])
+            
     away_win_prob = 1.0 - home_win_prob
     
     return {

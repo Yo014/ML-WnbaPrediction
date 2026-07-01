@@ -9,7 +9,9 @@ from sklearn.utils.validation import check_is_fitted
 from xgboost import XGBRegressor, XGBClassifier
 from lightgbm import LGBMRegressor, LGBMClassifier
 from catboost import CatBoostRegressor, CatBoostClassifier
-from sklearn.linear_model import Ridge, LogisticRegression
+from sklearn.linear_model import Ridge, LogisticRegression, LassoCV
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 
 class StackedEnsembleRegressor(BaseEstimator, RegressorMixin):
     """
@@ -45,15 +47,17 @@ class StackedEnsembleRegressor(BaseEstimator, RegressorMixin):
         cat_params = {**default_cat, **(self.cat_params or {})}
         
         ridge_params = self.ridge_params or {}
-        meta_params = self.meta_params or {}
+        
+        default_meta = {"cv": 5, "max_iter": 2000}
+        meta_params = {**default_meta, **(self.meta_params or {})}
         
         self.xgb_ = XGBRegressor(**xgb_params)
         self.lgbm_ = LGBMRegressor(**lgbm_params)
         self.cat_ = CatBoostRegressor(**cat_params)
-        self.ridge_ = Ridge(**ridge_params)
+        self.ridge_ = make_pipeline(StandardScaler(), Ridge(**ridge_params))
         
         self.base_models_ = [self.xgb_, self.lgbm_, self.cat_, self.ridge_]
-        self.meta_estimator_ = Ridge(**meta_params)
+        self.meta_estimator_ = LassoCV(**meta_params)
 
     def fit(self, X, y, cv_splits, sample_weight=None):
         """
@@ -106,7 +110,11 @@ class StackedEnsembleRegressor(BaseEstimator, RegressorMixin):
             fold_preds = []
             for model in cloned_models:
                 if w_train is not None:
-                    model.fit(X_train, y_train, sample_weight=w_train)
+                    if hasattr(model, "steps") and hasattr(model, "named_steps"):
+                        fit_params = {f"{model.steps[-1][0]}__sample_weight": w_train}
+                        model.fit(X_train, y_train, **fit_params)
+                    else:
+                        model.fit(X_train, y_train, sample_weight=w_train)
                 else:
                     model.fit(X_train, y_train)
                 
@@ -134,7 +142,11 @@ class StackedEnsembleRegressor(BaseEstimator, RegressorMixin):
         # 4. Fit final base models on the entire dataset
         for model in self.base_models_:
             if w_arr is not None:
-                model.fit(X_df, y_arr, sample_weight=w_arr)
+                if hasattr(model, "steps") and hasattr(model, "named_steps"):
+                    fit_params = {f"{model.steps[-1][0]}__sample_weight": w_arr}
+                    model.fit(X_df, y_arr, **fit_params)
+                else:
+                    model.fit(X_df, y_arr, sample_weight=w_arr)
             else:
                 model.fit(X_df, y_arr)
                 
@@ -207,12 +219,15 @@ class StackedEnsembleClassifier(BaseEstimator, ClassifierMixin):
         cat_params = {**default_cat, **(self.cat_params or {})}
         
         lr_params = {**default_lr, **(self.lr_params or {})}
-        meta_params = {**default_lr, **(self.meta_params or {})}
+        
+        # Classifier's meta-estimator: L1 regularization, liblinear solver, C=1.0
+        default_meta = {"penalty": "l1", "solver": "liblinear", "C": 1.0, "max_iter": 2000}
+        meta_params = {**default_meta, **(self.meta_params or {})}
         
         self.xgb_ = XGBClassifier(**xgb_params)
         self.lgbm_ = LGBMClassifier(**lgbm_params)
         self.cat_ = CatBoostClassifier(**cat_params)
-        self.lr_ = LogisticRegression(**lr_params)
+        self.lr_ = make_pipeline(StandardScaler(), LogisticRegression(**lr_params))
         
         self.base_models_ = [self.xgb_, self.lgbm_, self.cat_, self.lr_]
         self.meta_estimator_ = LogisticRegression(**meta_params)
@@ -270,7 +285,11 @@ class StackedEnsembleClassifier(BaseEstimator, ClassifierMixin):
             fold_preds = []
             for model in cloned_models:
                 if w_train is not None:
-                    model.fit(X_train, y_train, sample_weight=w_train)
+                    if hasattr(model, "steps") and hasattr(model, "named_steps"):
+                        fit_params = {f"{model.steps[-1][0]}__sample_weight": w_train}
+                        model.fit(X_train, y_train, **fit_params)
+                    else:
+                        model.fit(X_train, y_train, sample_weight=w_train)
                 else:
                     model.fit(X_train, y_train)
                 
@@ -307,7 +326,11 @@ class StackedEnsembleClassifier(BaseEstimator, ClassifierMixin):
         # 4. Fit final base models on the entire dataset
         for model in self.base_models_:
             if w_arr is not None:
-                model.fit(X_df, y_arr, sample_weight=w_arr)
+                if hasattr(model, "steps") and hasattr(model, "named_steps"):
+                    fit_params = {f"{model.steps[-1][0]}__sample_weight": w_arr}
+                    model.fit(X_df, y_arr, **fit_params)
+                else:
+                    model.fit(X_df, y_arr, sample_weight=w_arr)
             else:
                 model.fit(X_df, y_arr)
                 

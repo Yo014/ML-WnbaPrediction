@@ -35,7 +35,7 @@ def predict_spread_and_win_prob(model, metadata, features_df):
     Parameters:
     - model: Dictionary containing keys:
       'stage1_regressor', 'stage1_classifier', 'stage2_regressor', 'stage2_classifier',
-      'quantile_10', 'quantile_90'
+      'quantile_10', 'quantile_90', 'stage1_calibrator', 'stage2_calibrator'
     - metadata: Model metadata dictionary containing 'baseline_features', 'full_features', and 'sigma_residuals'
     - features_df: pandas DataFrame containing the exact feature columns required
     
@@ -49,6 +49,17 @@ def predict_spread_and_win_prob(model, metadata, features_df):
     
     # Create a copy and impute missing values using feature_means
     features_df = features_df.copy()
+    
+    # Dynamically calculate Market_Disagreement if missing, or default/fillna to 0.0
+    if 'Market_Disagreement' not in features_df.columns:
+        if 'Prob_Home' in features_df.columns:
+            poly = features_df['Poly_Prob_Home'] if 'Poly_Prob_Home' in features_df.columns else features_df['Prob_Home']
+            poly = poly.fillna(features_df['Prob_Home'])
+            features_df['Market_Disagreement'] = features_df['Prob_Home'] - poly
+        else:
+            features_df['Market_Disagreement'] = 0.0
+    features_df['Market_Disagreement'] = features_df['Market_Disagreement'].fillna(0.0)
+    
     for col in features_df.columns:
         if col in feature_means:
             mean_val = feature_means[col]
@@ -80,6 +91,7 @@ def predict_spread_and_win_prob(model, metadata, features_df):
         if missing_full:
             raise ValueError(f"Missing required features for Stage 2: {missing_full}")
             
+        # Select only the saved features list before predicting with base models
         X_full = df_stage2[full_feats]
         
         # Regressor predicts the residual
@@ -102,12 +114,18 @@ def predict_spread_and_win_prob(model, metadata, features_df):
         # Blend
         p_blend = 0.5 * p_cdf + 0.5 * p_clf
         
+        # Run final win probabilities through corresponding Platt/Isotonic calibrator
+        if 'stage2_calibrator' in model and model['stage2_calibrator'] is not None:
+            p_calibrated = model['stage2_calibrator'].predict(p_blend)
+        else:
+            p_calibrated = p_blend
+        
         # Assign
         for local_i, idx in enumerate(idx_stage2):
             global_i = idx_list.index(idx)
             predicted_spread[global_i] = mu_pred[local_i]
             dynamic_sigma[global_i] = sigma_pred[local_i]
-            home_win_prob[global_i] = p_blend[local_i]
+            home_win_prob[global_i] = p_calibrated[local_i]
             
     # Subset 2: Stage 1 fallback
     idx_stage1 = features_df.index[~has_closing_spread]
@@ -119,6 +137,7 @@ def predict_spread_and_win_prob(model, metadata, features_df):
         if missing_base:
             raise ValueError(f"Missing required features for Stage 1: {missing_base}")
             
+        # Select only the saved features list before predicting with base models
         X_base = df_stage1[baseline_feats]
         
         # Regressor predicts expected spread directly
@@ -134,12 +153,18 @@ def predict_spread_and_win_prob(model, metadata, features_df):
         # Blend
         p_blend = 0.5 * p_cdf + 0.5 * p_clf
         
+        # Run final win probabilities through corresponding Platt/Isotonic calibrator
+        if 'stage1_calibrator' in model and model['stage1_calibrator'] is not None:
+            p_calibrated = model['stage1_calibrator'].predict(p_blend)
+        else:
+            p_calibrated = p_blend
+        
         # Assign
         for local_i, idx in enumerate(idx_stage1):
             global_i = idx_list.index(idx)
             predicted_spread[global_i] = mu_pred[local_i]
             dynamic_sigma[global_i] = sigma_pred[local_i]
-            home_win_prob[global_i] = p_blend[local_i]
+            home_win_prob[global_i] = p_calibrated[local_i]
             
     predictions_df = pd.DataFrame({
         'predicted_spread': predicted_spread,

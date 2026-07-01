@@ -242,6 +242,7 @@ export default function SimulationBacktester() {
   const [minEdge, setMinEdge] = useState(7); // in percent, e.g. 7 = 7%
   const [wagerType, setWagerType] = useState('flat');
   const [flatWagerPct, setFlatWagerPct] = useState(2); // 2 = 2% of initial bankroll
+  const [bankrollCap, setBankrollCap] = useState(0.10); // bankroll cap fraction, defaulting to 1/10
   const [marketSource, setMarketSource] = useState('bookie');
   const [simulateRest, setSimulateRest] = useState(false);
   const [upcomingOnly, setUpcomingOnly] = useState(false);
@@ -260,7 +261,7 @@ export default function SimulationBacktester() {
       const minEdgeRatio = (minEdge / 100).toFixed(4);
       const flatWagerPctRatio = (flatWagerPct / 100).toFixed(4);
 
-      const url = `/api/simulation/run?season=${season}&initial_bankroll=${initialBankroll}&min_edge=${minEdgeRatio}&wager_type=${wagerType}&flat_wager_pct=${flatWagerPctRatio}&market_source=${marketSource}&simulate_rest=${simulateRest}&upcoming_only=${upcomingOnly}`;
+      const url = `/api/simulation/run?season=${season}&initial_bankroll=${initialBankroll}&min_edge=${minEdgeRatio}&wager_type=${wagerType}&flat_wager_pct=${flatWagerPctRatio}&market_source=${marketSource}&simulate_rest=${simulateRest}&upcoming_only=${upcomingOnly}&bankroll_cap=${bankrollCap}&kelly_fraction=${bankrollCap}`;
       const response = await fetch(url);
       if (!response.ok) {
         throw new Error(`Server returned status: ${response.status}`);
@@ -286,7 +287,7 @@ export default function SimulationBacktester() {
 
   useEffect(() => {
     fetchSimulation();
-  }, [season]); // Refetch automatically on season change; for betting config we allow manual re-run triggers
+  }, [season, minEdge, wagerType, flatWagerPct, bankrollCap, marketSource, simulateRest, upcomingOnly]);
 
   const metrics = data?.metrics;
   const standings = data?.standings || [];
@@ -381,9 +382,30 @@ export default function SimulationBacktester() {
               disabled={loading}
             >
               <option value="flat">Flat Betting ({flatWagerPct}% of Initial Bankroll)</option>
-              <option value="kelly">Kelly Criterion (1/10th Kelly, 10% Cap)</option>
+              <option value="kelly">Kelly Criterion ({bankrollCap === 0.10 ? '1/10th' : bankrollCap === 0.25 ? '1/4' : bankrollCap === 0.50 ? 'Half' : bankrollCap === 1.00 ? 'Full' : (bankrollCap * 100).toFixed(0) + '%'} Kelly, {bankrollCap === 1.0 ? 'No' : (bankrollCap * 100).toFixed(0)}% Cap)</option>
             </select>
           </div>
+
+          {wagerType === 'kelly' && (
+            <div className="control-group">
+              <label className="control-label" htmlFor="sim-kelly-cap">Kelly Cap ({bankrollCap === 1.0 ? 'No Cap' : `${Math.round(bankrollCap * 100)}%`})</label>
+              <select
+                id="sim-kelly-cap"
+                className="select-input"
+                value={bankrollCap}
+                onChange={(e) => setBankrollCap(parseFloat(e.target.value))}
+                disabled={loading}
+              >
+                <option value="0.10">1/10 (10% Cap)</option>
+                <option value="0.15">15% Cap</option>
+                <option value="0.20">20% Cap</option>
+                <option value="0.25">25% Cap</option>
+                <option value="0.30">30% Cap</option>
+                <option value="0.50">50% Cap</option>
+                <option value="1.00">No Cap (100%)</option>
+              </select>
+            </div>
+          )}
 
           {wagerType === 'flat' && (
             <div className="control-group">
