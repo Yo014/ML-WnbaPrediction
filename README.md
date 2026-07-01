@@ -44,16 +44,20 @@ flowchart TD
 ## 📂 Project Structure & Components
 
 ### 🗄️ 1. Database & Ingestion
-- **[db_manager.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/db_manager.py)**: Initializes the SQLite database (`wnba.db`) and defines schemas for:
+- **[db_manager.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/db_manager.py)**: Initializes the SQLite database (`wnba.db` / `frontend/wnba.db`) and defines schemas for:
   - `raw_matches`: Historical scores, actual referee crews (`CrewChief`, `HomeRef`, `AwayRef`), and bookmaker odds.
   - `player_stats`: Historic WNBA player statistics (Games Played, Minutes, Usage %, BPM, Win Shares).
   - `historical_inactives`: Historical inactive players recorded on each game date, used for leak-free squad health tracking.
   - `injuries`: Dynamic team injury states (fallback for upcoming matchups).
   - `polymarket_odds`: Implied YES/NO contract prices for matches.
-- **[scrape_combined.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/scrape_combined.py)**: A high-performance, combined scraper that extracts both officiating crews and inactive player lists from the WNBA Stats API in a single round-trip per game, bypassing rate limits using User-Agent overrides and randomized request jitter.
-- **[populate_db.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/populate_db.py)**: Scrapes base player stats and game logs, tracks ELO ratings, and fetches live FanDuel odds.
+- **[scrape_combined.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/scrape_combined.py)**: A high-performance, combined scraper that extracts both officiating crews and inactive player lists from the WNBA Stats API in a single round-trip per game, bypassing rate limits using User-Agent overrides and randomized request jitter. Replicates database edits to the frontend.
+- **[scrape_inactives.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/scrape_inactives.py)**: Specific scraper designed to backfill historic box score inactive rosters from seasons 2018–2026 into the `historical_inactives` table. Replicates database edits to the frontend.
+- **[scrape_referees.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/scrape_referees.py)**: Specific scraper designed to backfill historic box score officiating crews from seasons 2018–2026 into `raw_matches`. Replicates database edits to the frontend.
+- **[scrape_polymarket.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/scrape_polymarket.py)**: Scrapes WNBA outcome contract odds and trading volumes from the Polymarket Gamma API, syncing them into `polymarket_odds` for web and simulation consumption.
+- **[scrape_oddsshark.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/scrape_oddsshark.py)**: Parses public historical betting spreads and totals to populate baseline market odds.
+- **[populate_db.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/populate_db.py)**: Ingests WNBA league standings, schedules, raw match scores, player game logs, tracks historical ELO ratings, and fetches live FanDuel scoreboard odds.
 - **[fanduel_odds.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/fanduel_odds.py)**: Scrapes WNBA scoreboard JSON feed from Action Network, parsing pre-match spreads, moneylines, and totals.
-- **[build_squad_health.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/build_squad_health.py)**: Compiles active team rosters and calculates team injury impact ratios for the upcoming/current match.
+- **[build_squad_health.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/build_squad_health.py)**: Compiles active team rosters and calculates team injury impact ratios for the upcoming/current match, exporting them to `current_squad_health.csv`.
 
 ### 🧪 2. Data Processing & Features
 - **[data_processing.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/data_processing.py)**: Cleans and standardizes team names, and computes game-level possessions, pace, and defensive/offensive ratings.
@@ -72,11 +76,21 @@ flowchart TD
   - **H2H Bias**: Home team win rate against this specific opponent over the last 2 seasons.
 
 ### 🤖 3. Machine Learning Model
-- **[train_model.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/train_model.py)**: Tunes and trains the XGBoost Regressor (predicting spreads) and Classifier (predicting win probabilities) using a chronological split (Training: 2018–2024, Validation: 2025–2026). Re-enables referee EMA features (`Ref_Pts_EMA`, `Ref_Fouls_EMA`, `Ref_HomeWin_EMA`) alongside team and player talent stats. Saves models to `wnba_spread_model.pkl` and features/metadata to `model_metadata.json`.
-- **[predict.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/predict.py)**: Generates point spread predictions ($\mu_{\text{pred}}$) and maps them to home win probabilities ($P$) using the Normal Cumulative Distribution Function (CDF):
-  \[
-  P(\text{Home Win}) = \Phi\left(\frac{\mu_{\text{pred}}}{\sigma_{\text{residuals}}}\right)
-  \]
+- **[stacking_models.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/stacking_models.py)**: **[NEW]** Contains scikit-learn compatible `StackedEnsembleRegressor` and `StackedEnsembleClassifier` wrappers. Combines **XGBoost, LightGBM, CatBoost, and Ridge/LogisticRegression** using out-of-fold walk-forward cross-validation.
+- **[train_model.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/train_model.py)**: Implements the training and refitting workflow:
+  - **Stage 1 (Baseline)**: Trains a baseline stacked ensemble on ELO, schedule rest, and squad health (excluding bookmaker odds) to predict raw point margins (Home - Away).
+  - **Stage 2 (Two-Stage Residual)**: Trains a stacked regressor on the full feature set (including bookmaker odds) to predict the *residual* margin relative to the bookie's `ClosingSpread`.
+  - **Quantile Volatility Model**: Trains two separate LightGBM quantile regressors at the 10th and 90th percentiles to forecast dynamic game-specific spread volatilities.
+- **[predict.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/predict.py)**: Handles inference, including chronological mean imputation for missing features:
+  - If closing lines are available, predicts using Stage 2. Dynamic volatility standard deviation is computed from the quantiles:
+    \[
+    \sigma_{\text{pred}} = \frac{P_{90} - P_{10}}{2.563}
+    \]
+  - Calculates win probability by blending the Normal CDF of the predicted spread/residual ($\Phi$) and the direct stacked classifier output 50/50:
+    \[
+    P(\text{Home Win}) = 0.5 \cdot \Phi\left(\frac{\mu_{\text{pred}}}{\sigma_{\text{pred}}}\right) + 0.5 \cdot P_{\text{classifier}}
+    \]
+  - If closing lines are missing (e.g. future games), routes prediction automatically to Stage 1 ELO fallback models.
 
 ### 🎰 4. Betting Simulator & Backtester
 - **[simulate_season.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/simulate_season.py)**: Runs full season historical simulations. Compares Model, Bookie, and Polymarket probabilities against actual results (via Accuracy, Brier Score, and Log Loss). Simulates betting strategies:
@@ -94,37 +108,71 @@ flowchart TD
 
 ---
 
-## ⚡ Quick Start
+## ⚡ Code Execution Order & Pipeline Setup
 
-### 🐍 Backend Setup (Python)
+Follow this sequence of steps to run the pipeline, scrape historical stats, train the stacked ensembles, and launch the web server.
 
-1. **Install dependencies**:
+### 🐍 1. Backend Setup & Ingestion Pipeline
+
+1. **Install python packages**:
    ```bash
-   pip install numpy pandas xgboost scipy scikit-learn Flask Flask-Cors nba-api
+   pip install numpy pandas xgboost lightgbm catboost scipy scikit-learn Flask Flask-Cors nba-api
    ```
 
-2. **Initialize and populate the SQLite Database**:
+2. **Initialize SQLite Database schemas**:
    ```bash
    python3 db_manager.py
+   ```
+   *Creates `wnba.db` with core structures for matches, ELOs, injuries, and scrapers.*
+
+3. **Ingest core logs & game logs**:
+   ```bash
    python3 populate_db.py
    ```
+   *Fetches team profiles, schedules, raw match outcomes, player stats, and sets up ELO ratings.*
 
-3. **Compute Squad Health & Standardize Data**:
+4. **Scrape historical box scores (Officiating & Inactives)**:
+   You can either run the combined scraper (recommended) or the individual backfill scrapers:
+   * **Combined Scraper (Crew Chiefs + Inactive rosters)**:
+     ```bash
+     python3 scrape_combined.py --seasons 2022 2023 2024 2025 --delay 1.0
+     ```
+   * **Or Individual Scrapers**:
+     ```bash
+     python3 scrape_referees.py
+     python3 scrape_inactives.py
+     ```
+   *Pulls crew chiefs, referees, and inactive rosters directly from box scores for leak-free rolling features. Replicates `wnba.db` to `frontend/wnba.db` automatically.*
+
+5. **Compile squad health ratios**:
    ```bash
    python3 build_squad_health.py
+   ```
+   *Aggregates roster sizes, injured player metrics, and builds `current_squad_health.csv`.*
+
+6. **Process efficiency & possessions**:
+   ```bash
    python3 data_processing.py
    ```
+   *Standardizes team pacings, possession stats, and efficiency ratings.*
 
-4. **Engineer Features & Train Model**:
+7. **Generate features**:
    ```bash
    python3 feature_engineering.py
+   ```
+   *Computes rolling EMAs, ELO diffs, start-of-season carry-overs, and outputs the final training file `ml_ready_data.csv`.*
+
+8. **Train the Two-Stage Stacked & Quantile Models**:
+   ```bash
    python3 train_model.py
    ```
+   *Runs walk-forward out-of-fold stacking, residual regressor, and quantile model fits. Saves `wnba_spread_model.pkl` and `model_metadata.json`.*
 
-5. **Start Flask API Server**:
+9. **Start Flask API Server**:
    ```bash
    python3 app.py
    ```
+   *Launches the REST API on port 5001, loading the precalculated weights and serving upcoming bets.*
 
 ### ⚛️ Frontend Setup (React)
 

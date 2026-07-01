@@ -4,6 +4,7 @@ import json
 import pandas as pd
 import numpy as np
 from scipy.stats import norm
+from predict import predict_spread_and_win_prob
 
 def compute_metrics(probs, actuals):
     """Calculates Accuracy, Brier Score, and Log Loss for a series of probabilities and outcomes."""
@@ -84,19 +85,12 @@ def run_simulation(season, initial_bankroll=1000.0, min_edge=0.03, wager_type='f
     df_season = df_season.sort_values(by='Date').reset_index(drop=True)
     
     # 5. Make predictions
-    features_list = metadata.get('features', [])
-    missing_features = [feat for feat in features_list if feat not in df_season.columns]
-    if missing_features:
-        return {"error": f"Data file is missing features: {missing_features}"}
-        
-    X_season = df_season[features_list]
-    sigma_residuals = metadata.get('sigma_residuals', 10.0)
-    if isinstance(model, dict) and 'regressor' in model and 'classifier' in model:
-        predicted_spreads = model['regressor'].predict(X_season)
-        model_probs_home = model['classifier'].predict_proba(X_season)[:, 1]
-    else:
-        predicted_spreads = model.predict(X_season)
-        model_probs_home = norm.cdf(predicted_spreads / sigma_residuals)
+    try:
+        preds_df = predict_spread_and_win_prob(model, metadata, df_season)
+        predicted_spreads = preds_df['predicted_spread'].values
+        model_probs_home = preds_df['home_win_probability'].values
+    except Exception as e:
+        return {"error": f"Prediction failed in simulation: {str(e)}"}
     
     actual_home_wins = (df_season['HomeScore'] > df_season['AwayScore']).astype(float)
     

@@ -1,13 +1,15 @@
 import pandas as pd
 import numpy as np
 import xgboost as xgb
+import lightgbm as lgb
 import pickle
 import json
 import os
 from datetime import datetime
-from sklearn.model_selection import RandomizedSearchCV
-from sklearn.metrics import mean_absolute_error, r2_score, log_loss
+from sklearn.metrics import mean_absolute_error, log_loss
 from scipy.stats import norm
+
+from stacking_models import StackedEnsembleRegressor, StackedEnsembleClassifier
 
 class WalkForwardSeasonSplitter:
     def __init__(self, seasons_series):
@@ -44,10 +46,10 @@ def train_model():
     # Sort chronologically to make sure it is in order
     df = df.sort_values(by='Date').reset_index(drop=True)
     
-    # 2. Define target and features
+    # Define Target = HomeScore - AwayScore
     df['Target'] = df['HomeScore'] - df['AwayScore']
     
-    # Define features (including market features, excluding referee features)
+    # 2. Define the features and feature sets
     features = [
         # Ratings (EMA)
         'Home_Offensive_Rating_EMA_5', 'Home_Defensive_Rating_EMA_5',
@@ -90,14 +92,21 @@ def train_model():
         'BookieHomeOdds', 'BookieAwayOdds', 'OpeningSpread', 'ClosingSpread', 'OverUnder', 'Prob_Home'
     ]
     
+    market_features = ['BookieHomeOdds', 'BookieAwayOdds', 'OpeningSpread', 'ClosingSpread', 'OverUnder', 'Prob_Home']
+    
+    baseline_features = [f for f in features if f not in market_features]
+    full_features = baseline_features + market_features
+    
     print(f"Total features defined: {len(features)}")
+    print(f"Baseline features: {len(baseline_features)}, Full features: {len(full_features)}")
     
     # Verify features exist in dataframe
     missing_features = [f for f in features if f not in df.columns]
     if missing_features:
         raise ValueError(f"Missing features in dataset: {missing_features}")
         
-    # 3. Prepare data for tuning on seasons 2018-2026 (split at 2026-06-01)
+    # 3. Prepare data for tuning/training (chronological split)
+    # Train/validation before 2026-06-01, test after 2026-06-01
     train_val_mask = df['Date'] < '2026-06-01'
     train_val_df = df[train_val_mask].copy().reset_index(drop=True)
     test_df = df[~train_val_mask].copy().reset_index(drop=True)
@@ -105,10 +114,17 @@ def train_model():
     if test_df.empty:
         raise ValueError("Held-out test set (Date >= 2026-06-01) is empty.")
         
-    X_train_val = train_val_df[features]
-    y_reg_train_val = train_val_df['Target']
-    y_clf_train_val = (y_reg_train_val > 0).astype(int)
-    
+    # Fill NaNs using the mean of the training-validation set to prevent look-ahead bias and handle scikit-learn estimators
+    feature_means = {}
+    for col in features:
+        mean_val = train_val_df[col].mean()
+        if pd.isna(mean_val):
+            mean_val = 0.0
+        feature_means[col] = float(mean_val)
+        train_val_df[col] = train_val_df[col].fillna(mean_val)
+        test_df[col] = test_df[col].fillna(mean_val)
+        df[col] = df[col].fillna(mean_val)
+        
     # Calculate sample weights
     max_train_date = train_val_df['Date'].max()
     days_diff = (pd.to_datetime(max_train_date) - pd.to_datetime(train_val_df['Date'])).dt.days
@@ -117,147 +133,181 @@ def train_model():
     print(f"Tuning dataset size (Date < 2026-06-01): {len(train_val_df)} matches")
     print(f"June 2026 test set size (Date >= 2026-06-01): {len(test_df)} matches")
     
-    # 4. Hyperparameter tuning using RandomizedSearchCV and Custom Splitter
+    # Generate custom splits
     cv_splitter = WalkForwardSeasonSplitter(train_val_df['Season'])
+    cv_splits = list(cv_splitter.split(train_val_df))
     
-    param_distributions = {
-        'max_depth': [3, 4, 5, 6, 7],
-        'learning_rate': [0.01, 0.02, 0.03, 0.05, 0.1],
-        'n_estimators': [50, 100, 150, 200, 300, 400],
-        'subsample': [0.6, 0.7, 0.8, 0.9, 1.0],
-        'colsample_bytree': [0.6, 0.7, 0.8, 0.9, 1.0],
-        'reg_alpha': [0.0, 0.1, 0.5, 1.0, 2.0, 5.0],
-        'reg_lambda': [1.0, 2.0, 5.0, 10.0, 20.0],
-        'min_child_weight': [1, 3, 5, 10]
-    }
+    # 4. Train models
+    print("\nTraining Stage 1 Stacking Models on baseline_features...")
+    y_reg_train_val = train_val_df['Target'].values
+    y_clf_train_val = (y_reg_train_val > 0).astype(int)
     
-    print("Fine-tuning XGBRegressor...")
-    base_reg = xgb.XGBRegressor(objective='reg:squarederror', random_state=42, n_jobs=-1)
-    random_search_reg = RandomizedSearchCV(
-        estimator=base_reg,
-        param_distributions=param_distributions,
-        n_iter=60,
-        scoring='neg_mean_absolute_error',
-        cv=cv_splitter,
-        random_state=42,
-        n_jobs=-1,
-        verbose=1
-    )
-    random_search_reg.fit(X_train_val, y_reg_train_val, sample_weight=train_val_weights)
-    best_reg = random_search_reg.best_estimator_
-    best_reg_params = random_search_reg.best_params_
-    print(f"Best Regressor Params: {best_reg_params}")
+    stage1_reg = StackedEnsembleRegressor()
+    stage1_reg.fit(train_val_df[baseline_features], y_reg_train_val, cv_splits, sample_weight=train_val_weights)
     
-    print("Fine-tuning XGBClassifier...")
-    base_clf = xgb.XGBClassifier(objective='binary:logistic', eval_metric='logloss', random_state=42, n_jobs=-1)
-    random_search_clf = RandomizedSearchCV(
-        estimator=base_clf,
-        param_distributions=param_distributions,
-        n_iter=60,
-        scoring='neg_log_loss',
-        cv=cv_splitter,
-        random_state=42,
-        n_jobs=-1,
-        verbose=1
-    )
-    random_search_clf.fit(X_train_val, y_clf_train_val, sample_weight=train_val_weights)
-    best_clf = random_search_clf.best_estimator_
-    best_clf_params = random_search_clf.best_params_
-    print(f"Best Classifier Params: {best_clf_params}")
+    stage1_clf = StackedEnsembleClassifier()
+    stage1_clf.fit(train_val_df[baseline_features], y_clf_train_val, cv_splits, sample_weight=train_val_weights)
     
-    # 5. Evaluate on held-out June 2026 test set
-    X_test = test_df[features]
-    y_reg_test = test_df['Target']
-    y_clf_test = (y_reg_test > 0).astype(int)
+    print("\nTraining Stage 2 Stacking Models (Residual & Direct Classification) on full_features...")
+    y_residual_train_val = y_reg_train_val - train_val_df['ClosingSpread'].values
     
-    # Regressor predictions
-    y_reg_pred = best_reg.predict(X_test)
-    reg_mae = mean_absolute_error(y_reg_test, y_reg_pred)
-    reg_accuracy = np.mean((y_reg_test > 0) == (y_reg_pred > 0)) * 100.0
+    stage2_reg = StackedEnsembleRegressor()
+    stage2_reg.fit(train_val_df[full_features], y_residual_train_val, cv_splits, sample_weight=train_val_weights)
     
-    # Calculate sigma of residuals on the training-validation data to convert regressor predictions to probabilities
-    y_reg_cv_pred = best_reg.predict(X_train_val)
-    residuals_cv = y_reg_train_val - y_reg_cv_pred
-    sigma_residuals_cv = float(np.std(residuals_cv))
+    stage2_clf = StackedEnsembleClassifier()
+    stage2_clf.fit(train_val_df[full_features], y_clf_train_val, cv_splits, sample_weight=train_val_weights)
     
-    # Probability of home win from regressor (using normal CDF)
-    y_reg_prob = norm.cdf(y_reg_pred / sigma_residuals_cv)
-    reg_logloss = log_loss(y_clf_test, y_reg_prob)
+    print("\nTraining Stage 2 Quantile Regressors (LGBM) on full_features...")
+    quantile_10 = lgb.LGBMRegressor(objective='quantile', alpha=0.10, random_state=42, verbose=-1)
+    quantile_10.fit(train_val_df[full_features], y_reg_train_val, sample_weight=train_val_weights)
     
-    # Classifier predictions
-    y_clf_prob = best_clf.predict_proba(X_test)[:, 1]
-    clf_logloss = log_loss(y_clf_test, y_clf_prob)
-    clf_accuracy = np.mean(y_clf_test == (y_clf_prob >= 0.5)) * 100.0
+    quantile_90 = lgb.LGBMRegressor(objective='quantile', alpha=0.90, random_state=42, verbose=-1)
+    quantile_90.fit(train_val_df[full_features], y_reg_train_val, sample_weight=train_val_weights)
     
-    print("\n================ JUNE 2026 HELD-OUT TEST METRICS ================")
-    print(f"XGBRegressor (objective='reg:squarederror'):")
-    print(f"  MAE:                    {reg_mae:.4f}")
-    print(f"  Win/Loss Accuracy:      {reg_accuracy:.2f}%")
-    print(f"  LogLoss (implied CDF):  {reg_logloss:.4f}")
-    print(f"XGBClassifier (objective='binary:logistic'):")
-    print(f"  Win/Loss Accuracy:      {clf_accuracy:.2f}%")
-    print(f"  LogLoss:                {clf_logloss:.4f}")
-    print("================================================================")
+    # 5. Evaluate all models on the held-out June 2026 test set
+    X_test_baseline = test_df[baseline_features]
+    X_test_full = test_df[full_features]
+    y_test_reg = test_df['Target'].values
+    y_test_clf = (y_test_reg > 0).astype(int)
     
-    # 6. Re-fit on the full historical dataset (2018-present)
+    # Baseline (Market)
+    market_margin = -test_df['ClosingSpread'].values
+    market_prob = test_df['Prob_Home'].values
+    market_mae = mean_absolute_error(y_test_reg, market_margin)
+    market_accuracy = np.mean(y_test_clf == (market_prob >= 0.5)) * 100.0
+    market_logloss = log_loss(y_test_clf, market_prob)
+    
+    # Stage 1 Stacking
+    stage1_pred_margin = stage1_reg.predict(X_test_baseline)
+    stage1_prob_clf = stage1_clf.predict_proba(X_test_baseline)[:, 1]
+    stage1_mae = mean_absolute_error(y_test_reg, stage1_pred_margin)
+    stage1_clf_accuracy = np.mean(y_test_clf == (stage1_prob_clf >= 0.5)) * 100.0
+    stage1_logloss = log_loss(y_test_clf, stage1_prob_clf)
+    
+    # Stage 2 Stacking & Volatility
+    stage2_residual_pred = stage2_reg.predict(X_test_full)
+    stage2_predicted_margin = test_df['ClosingSpread'].values + stage2_residual_pred
+    
+    p10_pred = quantile_10.predict(X_test_full)
+    p90_pred = quantile_90.predict(X_test_full)
+    
+    # Volatility standard deviation: sigma_pred = (p90 - p10) / 2.563
+    sigma_pred = (p90_pred - p10_pred) / 2.563
+    sigma_pred = np.maximum(sigma_pred, 1e-3)  # Prevent division by zero
+    
+    # CDF-derived probability: P_CDF = norm.cdf(predicted_margin / sigma_pred)
+    P_CDF = norm.cdf(stage2_predicted_margin / sigma_pred)
+    
+    # Stage 2 Classifier probability
+    P_Clf = stage2_clf.predict_proba(X_test_full)[:, 1]
+    
+    # Blend P_CDF 50/50 with Stage 2 Classifier
+    final_win_prob = 0.5 * P_CDF + 0.5 * P_Clf
+    
+    stage2_mae = mean_absolute_error(y_test_reg, stage2_predicted_margin)
+    stage2_clf_accuracy = np.mean(y_test_clf == (final_win_prob >= 0.5)) * 100.0
+    stage2_logloss = log_loss(y_test_clf, final_win_prob)
+    
+    # Print metrics table
+    print("\n" + "="*80)
+    print(f"{'MODEL EVALUATION SUMMARY (JUNE 2026 TEST SET)':^80}")
+    print("="*80)
+    print(f"{'Model / Metric':<35} | {'MAE':^12} | {'Accuracy (%)':^15} | {'Log Loss':^12}")
+    print("-"*80)
+    print(f"{'Market Baseline (Closing Lines)':<35} | {market_mae:^12.4f} | {market_accuracy:^15.2f} | {market_logloss:^12.4f}")
+    print(f"{'Stage 1 Stacking (Baseline Features)':<35} | {stage1_mae:^12.4f} | {stage1_clf_accuracy:^15.2f} | {stage1_logloss:^12.4f}")
+    print(f"{'Stage 2 Stacking (Two-Stage + Vol)':<35} | {stage2_mae:^12.4f} | {stage2_clf_accuracy:^15.2f} | {stage2_logloss:^12.4f}")
+    print("="*80)
+    
+    # 6. Re-fit all best estimators on the full historical dataset (2018–2026) using sample weights
     refit_df = df.copy().reset_index(drop=True)
-    X_refit = refit_df[features]
-    y_reg_refit = refit_df['Target']
+    X_refit_baseline = refit_df[baseline_features]
+    X_refit_full = refit_df[full_features]
+    y_reg_refit = refit_df['Target'].values
     y_clf_refit = (y_reg_refit > 0).astype(int)
     
     max_refit_date = refit_df['Date'].max()
     days_diff_refit = (pd.to_datetime(max_refit_date) - pd.to_datetime(refit_df['Date'])).dt.days
     refit_weights = np.maximum(0.2, np.exp(-0.000551 * days_diff_refit)).values
     
-    print(f"\nRe-fitting best estimators on entire historical dataset ({len(refit_df)} matches) using sample weights...")
-    best_reg.fit(X_refit, y_reg_refit, sample_weight=refit_weights)
-    best_clf.fit(X_refit, y_clf_refit, sample_weight=refit_weights)
+    print(f"\nRe-fitting models on entire historical dataset ({len(refit_df)} matches) using sample weights...")
+    cv_splitter_refit = WalkForwardSeasonSplitter(refit_df['Season'])
+    cv_splits_refit = list(cv_splitter_refit.split(refit_df))
     
-    # Recalculate sigma of residuals on the re-fitted historical dataset
-    y_reg_refit_pred = best_reg.predict(X_refit)
-    refit_residuals = y_reg_refit - y_reg_refit_pred
+    # Stage 1 Stacking Re-fit
+    stage1_reg.fit(X_refit_baseline, y_reg_refit, cv_splits_refit, sample_weight=refit_weights)
+    stage1_clf.fit(X_refit_baseline, y_clf_refit, cv_splits_refit, sample_weight=refit_weights)
+    
+    # Stage 2 Stacking Re-fit
+    y_residual_refit = y_reg_refit - refit_df['ClosingSpread'].values
+    stage2_reg.fit(X_refit_full, y_residual_refit, cv_splits_refit, sample_weight=refit_weights)
+    stage2_clf.fit(X_refit_full, y_clf_refit, cv_splits_refit, sample_weight=refit_weights)
+    
+    # Quantile Re-fit
+    quantile_10.fit(X_refit_full, y_reg_refit, sample_weight=refit_weights)
+    quantile_90.fit(X_refit_full, y_reg_refit, sample_weight=refit_weights)
+    
+    # Calculate traditional standard deviation of residuals on refitted full dataset
+    stage2_pred_residual_refit = stage2_reg.predict(X_refit_full)
+    refit_residuals = y_reg_refit - (refit_df['ClosingSpread'].values + stage2_pred_residual_refit)
     sigma_residuals_refit = float(np.std(refit_residuals))
     print(f"Re-fitted Residuals Standard Deviation (sigma): {sigma_residuals_refit:.4f}")
     
-    # 7. Save both models as a dictionary in wnba_spread_model.pkl
+    # 7. Save the trained models in a dictionary structure inside wnba_spread_model.pkl
     model_filename = 'wnba_spread_model.pkl'
     print(f"Saving models to {model_filename}...")
-    ensemble_dict = {
-        'regressor': best_reg,
-        'classifier': best_clf
+    model_dict = {
+        'stage1_regressor': stage1_reg,
+        'stage1_classifier': stage1_clf,
+        'stage2_regressor': stage2_reg,
+        'stage2_classifier': stage2_clf,
+        'quantile_10': quantile_10,
+        'quantile_90': quantile_90
     }
     with open(model_filename, 'wb') as f:
-        pickle.dump(ensemble_dict, f)
+        pickle.dump(model_dict, f)
         
-    # Get feature importances
-    reg_importances = best_reg.feature_importances_
-    reg_feat_imp = sorted(
-        {feat: float(imp) for feat, imp in zip(features, reg_importances)}.items(),
-        key=lambda item: item[1],
-        reverse=True
-    )
-    clf_importances = best_clf.feature_importances_
-    clf_feat_imp = sorted(
-        {feat: float(imp) for feat, imp in zip(features, clf_importances)}.items(),
-        key=lambda item: item[1],
-        reverse=True
-    )
-    
-    # 8. Save metadata to model_metadata.json
+    # Get feature importances from Stage 2 base models (XGBoost)
+    try:
+        reg_importances = stage2_reg.base_models_[0].feature_importances_
+        reg_feat_imp = sorted(
+            {feat: float(imp) for feat, imp in zip(full_features, reg_importances)}.items(),
+            key=lambda item: item[1],
+            reverse=True
+        )
+    except Exception as e:
+        print(f"Could not compute regressor feature importances: {e}")
+        reg_feat_imp = []
+
+    try:
+        clf_importances = stage2_clf.base_models_[0].feature_importances_
+        clf_feat_imp = sorted(
+            {feat: float(imp) for feat, imp in zip(full_features, clf_importances)}.items(),
+            key=lambda item: item[1],
+            reverse=True
+        )
+    except Exception as e:
+        print(f"Could not compute classifier feature importances: {e}")
+        clf_feat_imp = []
+        
+    # 8. Save features list and other metadata to model_metadata.json
     metadata = {
         'training_timestamp': datetime.now().isoformat(),
-        'features': features,
-        'best_hyperparameters': {
-            'regressor': best_reg_params,
-            'classifier': best_clf_params
-        },
+        'feature_means': feature_means,
+        'features': full_features,
+        'baseline_features': baseline_features,
+        'full_features': full_features,
         'metrics': {
             'test_june_2026': {
-                'regressor_mae': float(reg_mae),
-                'regressor_logloss': float(reg_logloss),
-                'regressor_accuracy': float(reg_accuracy),
-                'classifier_logloss': float(clf_logloss),
-                'classifier_accuracy': float(clf_accuracy)
+                'market_mae': float(market_mae),
+                'market_accuracy': float(market_accuracy),
+                'market_logloss': float(market_logloss),
+                'stage1_mae': float(stage1_mae),
+                'stage1_accuracy': float(stage1_clf_accuracy),
+                'stage1_logloss': float(stage1_logloss),
+                'stage2_mae': float(stage2_mae),
+                'stage2_accuracy': float(stage2_clf_accuracy),
+                'stage2_logloss': float(stage2_logloss)
             }
         },
         'sigma_residuals': sigma_residuals_refit,
@@ -272,7 +322,7 @@ def train_model():
     with open(metadata_filename, 'w') as f:
         json.dump(metadata, f, indent=4)
         
-    print("\nFeature Importances (Top 10 Regressor):")
+    print("\nFeature Importances (Top 10 Regressor from Stage 2 base XGBRegressor):")
     for feat, imp in reg_feat_imp[:10]:
         print(f"  {feat}: {imp:.4f}")
         

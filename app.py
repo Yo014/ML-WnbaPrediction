@@ -17,6 +17,9 @@ from scipy.stats import norm
 import simulate_season
 import scrape_polymarket
 from fanduel_odds import fetch_fanduel_odds
+from datetime import datetime
+from zoneinfo import ZoneInfo
+from stacking_models import StackedEnsembleRegressor, StackedEnsembleClassifier
 
 # Configure static folder and template folder to target frontend/dist dynamically
 base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -547,7 +550,7 @@ def auto_settle_bets(cursor):
     # Commit the changes to the database using the cursor's connection
     cursor.connection.commit()
 
-def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chief=None, home_injured_list=None, away_injured_list=None):
+def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chief=None, home_injured_list=None, away_injured_list=None, fd_match=None):
     """
     Abstracted WNBA point spread and win probability prediction pipeline.
     Uses squad health metrics, team EMA trends, schedule rest, talent floors, ELO, H2H bias, 
@@ -658,6 +661,25 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
     h2h_bias = compute_h2h_bias(conn, home_team, away_team, prediction_date)
     conn.close()
     
+    if fd_match:
+        bookie_home_odds = fd_match['home_odds']
+        bookie_away_odds = fd_match['away_odds']
+        closing_spread = fd_match['closing_spread']
+        opening_spread = fd_match.get('opening_spread', fd_match['closing_spread'])
+        over_under = fd_match['over_under']
+        
+        p_home_raw = 1.0 / bookie_home_odds if bookie_home_odds > 0 else 0.5
+        p_away_raw = 1.0 / bookie_away_odds if bookie_away_odds > 0 else 0.5
+        sum_p = p_home_raw + p_away_raw
+        prob_home = p_home_raw / sum_p if sum_p > 0 else 0.5
+    else:
+        bookie_home_odds = odds['BookieHomeOdds']
+        bookie_away_odds = odds['BookieAwayOdds']
+        closing_spread = odds['ClosingSpread']
+        opening_spread = odds['OpeningSpread']
+        over_under = odds['OverUnder']
+        prob_home = odds['Prob_Home']
+        
     # Recalculate Net Rating EMAs
     home_net_5 = get_ema_value(home_emas, 'Offensive_Rating_EMA_5') - get_ema_value(home_emas, 'Defensive_Rating_EMA_5')
     home_net_10 = get_ema_value(home_emas, 'Offensive_Rating_EMA_10') - get_ema_value(home_emas, 'Defensive_Rating_EMA_10')
@@ -707,12 +729,12 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
         'Home_Talent_Floor': home_talent_floor,
         'Away_Talent_Floor': away_talent_floor,
         'Talent_Floor_Diff': talent_floor_diff,
-        'BookieHomeOdds': odds['BookieHomeOdds'],
-        'BookieAwayOdds': odds['BookieAwayOdds'],
-        'OpeningSpread': odds['OpeningSpread'],
-        'ClosingSpread': odds['ClosingSpread'],
-        'OverUnder': odds['OverUnder'],
-        'Prob_Home': odds['Prob_Home'],
+        'BookieHomeOdds': bookie_home_odds,
+        'BookieAwayOdds': bookie_away_odds,
+        'OpeningSpread': opening_spread,
+        'ClosingSpread': closing_spread,
+        'OverUnder': over_under,
+        'Prob_Home': prob_home,
         'Home_Missing_Usage_Pct': home_health['Missing_Usage_Pct'],
         'Away_Missing_Usage_Pct': away_health['Missing_Usage_Pct'],
         'Home_Missing_BPM_Pct': home_health['Missing_BPM_Pct'],
@@ -735,34 +757,49 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
         'H2H_Bias': h2h_bias
     }
     
-    # Build dataframe matching features list order
-    features_list = METADATA['features']
-    features_df = pd.DataFrame([feature_dict])[features_list]
-    
     # Predict spread and win probabilities
-    if isinstance(MODEL, dict) and 'regressor' in MODEL and 'classifier' in MODEL:
-        predicted_spread = float(MODEL['regressor'].predict(features_df)[0])
-        home_win_prob = float(MODEL['classifier'].predict_proba(features_df)[0, 1])
+    if fd_match:
+        features_list = METADATA['full_features']
+        features_df = pd.DataFrame([feature_dict])[features_list]
+        
+        residual_pred = float(MODEL['stage2_regressor'].predict(features_df)[0])
+        predicted_spread = closing_spread + residual_pred
+        
+        p10 = float(MODEL['quantile_10'].predict(features_df)[0])
+        p90 = float(MODEL['quantile_90'].predict(features_df)[0])
+        dynamic_sigma = (p90 - p10) / 2.563
+        dynamic_sigma = max(dynamic_sigma, 1e-5)
+        
+        p_cdf = float(norm.cdf(predicted_spread / dynamic_sigma))
+        p_clf = float(MODEL['stage2_classifier'].predict_proba(features_df)[0, 1])
+        home_win_prob = 0.5 * p_cdf + 0.5 * p_clf
     else:
-        predicted_spread = float(MODEL.predict(features_df)[0])
-        sigma_residuals = METADATA['sigma_residuals']
-        home_win_prob = float(norm.cdf(predicted_spread / sigma_residuals))
+        features_list = METADATA['baseline_features']
+        features_df = pd.DataFrame([feature_dict])[features_list]
+        
+        predicted_spread = float(MODEL['stage1_regressor'].predict(features_df)[0])
+        dynamic_sigma = METADATA.get('sigma_residuals', 10.0)
+        
+        p_cdf = float(norm.cdf(predicted_spread / dynamic_sigma))
+        p_clf = float(MODEL['stage1_classifier'].predict_proba(features_df)[0, 1])
+        home_win_prob = 0.5 * p_cdf + 0.5 * p_clf
         
     away_win_prob = 1.0 - home_win_prob
     
     return {
         'predicted_spread': round(predicted_spread, 2),
+        'dynamic_sigma': round(dynamic_sigma, 3),
         'home_win_probability': round(home_win_prob * 100, 1),
         'away_win_probability': round(away_win_prob * 100, 1),
         'home_health': home_health,
         'away_health': away_health,
         'odds': {
-            'bookie_home_odds': odds['BookieHomeOdds'],
-            'bookie_away_odds': odds['BookieAwayOdds'],
-            'opening_spread': odds['OpeningSpread'],
-            'closing_spread': odds['ClosingSpread'],
-            'over_under': odds['OverUnder'],
-            'implied_prob_home': round(odds['Prob_Home'] * 100, 1)
+            'bookie_home_odds': bookie_home_odds,
+            'bookie_away_odds': bookie_away_odds,
+            'opening_spread': opening_spread,
+            'closing_spread': closing_spread,
+            'over_under': over_under,
+            'implied_prob_home': round(prob_home * 100, 1)
         },
         'differentials': {
             'talent_floor_diff': round(talent_floor_diff, 2),
@@ -807,6 +844,14 @@ def predict():
 @app.route('/api/upcoming_predictions', methods=['GET'])
 def upcoming_predictions():
     start_date = request.args.get('start_date', '2026-06-20')
+    
+    # Fetch live FanDuel odds for matchup matching
+    try:
+        fd_games = fetch_fanduel_odds()
+    except Exception as e:
+        print("Failed to fetch live FanDuel odds in /api/upcoming_predictions:", e)
+        fd_games = []
+        
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     try:
@@ -829,11 +874,34 @@ def upcoming_predictions():
         norm_home = normalize_team_name(home_team)
         norm_away = normalize_team_name(away_team)
         
+        # Check if game exists in fetched FanDuel odds (matching date and teams)
+        fd_match = None
+        for g in fd_games:
+            g_home = g.get('home_team_full')
+            g_away = g.get('away_team_full')
+            norm_g_home = normalize_team_name(g_home) if g_home else ""
+            norm_g_away = normalize_team_name(g_away) if g_away else ""
+            if norm_g_home == norm_home and norm_g_away == norm_away:
+                g_date = g.get('date')
+                if g_date == match_date:
+                    fd_match = g
+                    break
+                else:
+                    try:
+                        d1 = datetime.strptime(g_date, '%Y-%m-%d').date()
+                        d2 = datetime.strptime(match_date, '%Y-%m-%d').date()
+                        if abs((d1 - d2).days) <= 1:
+                            fd_match = g
+                            break
+                    except Exception:
+                        pass
+        
         try:
             pred = make_prediction_for_matchup(
                 home_team=norm_home,
                 away_team=norm_away,
-                prediction_date=match_date
+                prediction_date=match_date,
+                fd_match=fd_match
             )
             pred_error = None
         except Exception as e:
@@ -1240,19 +1308,6 @@ def get_upcoming_bets():
             home_injured_names = [p['name'] for p in home_injuries]
             away_injured_names = [p['name'] for p in away_injuries]
             
-            # Predict using our prediction helper
-            try:
-                pred = make_prediction_for_matchup(
-                    home_team=home_team_full,
-                    away_team=away_team_full,
-                    prediction_date=match_date,
-                    home_injured_list=home_injured_names,
-                    away_injured_list=away_injured_names
-                )
-            except Exception as e:
-                print(f"Prediction failed for matchup {home_team_full} vs {away_team_full} on {match_date}: {e}")
-                pred = None
-            
             # Check if game exists in fetched FanDuel odds (matching date and teams)
             fd_match = None
             for g in fd_games:
@@ -1272,6 +1327,20 @@ def get_upcoming_bets():
                                 break
                         except Exception:
                             pass
+            
+            # Predict using our prediction helper
+            try:
+                pred = make_prediction_for_matchup(
+                    home_team=home_team_full,
+                    away_team=away_team_full,
+                    prediction_date=match_date,
+                    home_injured_list=home_injured_names,
+                    away_injured_list=away_injured_names,
+                    fd_match=fd_match
+                )
+            except Exception as e:
+                print(f"Prediction failed for matchup {home_team_full} vs {away_team_full} on {match_date}: {e}")
+                pred = None
             
             if fd_match:
                 # Merge FanDuel odds
@@ -1339,6 +1408,8 @@ def get_upcoming_bets():
                 'away_team': REVERSE_TEAM_MAP.get(away_abbr.upper(), away_abbr),
                 'home_prob': pred['home_win_probability'] if pred else 50.0,
                 'away_prob': pred['away_win_probability'] if pred else 50.0,
+                'predicted_spread': pred['predicted_spread'] if pred else 0.0,
+                'dynamic_sigma': pred['dynamic_sigma'] if pred else None,
                 'polymarket_home_prob': round(home_yes_price * 100, 1),
                 'polymarket_away_prob': round(away_yes_price * 100, 1),
                 'home_price': home_yes_price,
