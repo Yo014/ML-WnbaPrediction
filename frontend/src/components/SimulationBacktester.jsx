@@ -246,6 +246,7 @@ export default function SimulationBacktester() {
   const [marketSource, setMarketSource] = useState('bookie');
   const [simulateRest, setSimulateRest] = useState(false);
   const [upcomingOnly, setUpcomingOnly] = useState(false);
+  const [bettingMode, setBettingMode] = useState('spread');
 
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -261,7 +262,7 @@ export default function SimulationBacktester() {
       const minEdgeRatio = (minEdge / 100).toFixed(4);
       const flatWagerPctRatio = (flatWagerPct / 100).toFixed(4);
 
-      const url = `/api/simulation/run?season=${season}&initial_bankroll=${initialBankroll}&min_edge=${minEdgeRatio}&wager_type=${wagerType}&flat_wager_pct=${flatWagerPctRatio}&market_source=${marketSource}&simulate_rest=${simulateRest}&upcoming_only=${upcomingOnly}&bankroll_cap=${bankrollCap}&kelly_fraction=${bankrollCap}`;
+      const url = `/api/simulation/run?season=${season}&initial_bankroll=${initialBankroll}&min_edge=${minEdgeRatio}&wager_type=${wagerType}&flat_wager_pct=${flatWagerPctRatio}&market_source=${marketSource}&simulate_rest=${simulateRest}&upcoming_only=${upcomingOnly}&bankroll_cap=${bankrollCap}&kelly_fraction=${bankrollCap}&betting_mode=${bettingMode}`;
       const response = await fetch(url);
       if (!response.ok) {
         throw new Error(`Server returned status: ${response.status}`);
@@ -287,7 +288,7 @@ export default function SimulationBacktester() {
 
   useEffect(() => {
     fetchSimulation();
-  }, [season, minEdge, wagerType, flatWagerPct, bankrollCap, marketSource, simulateRest, upcomingOnly]);
+  }, [season, minEdge, wagerType, flatWagerPct, bankrollCap, marketSource, simulateRest, upcomingOnly, bettingMode]);
 
   const metrics = data?.metrics;
   const standings = data?.standings || [];
@@ -355,6 +356,21 @@ export default function SimulationBacktester() {
               disabled={loading}
               min="10"
             />
+          </div>
+
+          <div className="control-group">
+            <label className="control-label" htmlFor="sim-betting-mode">Betting Target</label>
+            <select
+              id="sim-betting-mode"
+              className="select-input"
+              value={bettingMode}
+              onChange={(e) => setBettingMode(e.target.value)}
+              disabled={loading}
+            >
+              <option value="spread">Point Spread / Money Line</option>
+              <option value="total">Over / Under Totals</option>
+              <option value="both">Both (Select Max Edge)</option>
+            </select>
           </div>
 
           <div className="control-group">
@@ -827,9 +843,9 @@ export default function SimulationBacktester() {
                       <td style={{
                         textAlign: 'right',
                         fontWeight: '700',
-                        color: bet.bet_win ? 'var(--neon-emerald)' : 'var(--neon-rose)'
+                        color: bet.bet_win === 'push' ? 'var(--color-text-dim)' : (bet.bet_win ? 'var(--neon-emerald)' : 'var(--neon-rose)')
                       }}>
-                        {bet.bet_win ? '+' : ''}${bet.bet_payout.toFixed(2)}
+                        {bet.bet_win === 'push' ? '' : (bet.bet_win ? '+' : '')}${bet.bet_payout.toFixed(2)}
                       </td>
                     </tr>
                   );

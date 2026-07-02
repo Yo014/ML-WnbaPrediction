@@ -85,6 +85,8 @@ def fetch_fanduel_odds():
                 ml_away = fd_odds.get('ml_away')
                 spread_home = fd_odds.get('spread_home')
                 total = fd_odds.get('total')
+                over_american = fd_odds.get('over')
+                under_american = fd_odds.get('under')
                 
                 # Convert date from start_time
                 start_time = g.get('start_time')
@@ -102,7 +104,9 @@ def fetch_fanduel_odds():
                         'home_odds': home_odds,
                         'away_odds': away_odds,
                         'closing_spread': spread_home,
-                        'over_under': total
+                        'over_under': total,
+                        'over_odds': american_to_decimal(over_american) if over_american is not None else 1.91,
+                        'under_odds': american_to_decimal(under_american) if under_american is not None else 1.91
                     })
         return parsed_games
     except Exception as e:

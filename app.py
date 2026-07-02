@@ -37,10 +37,14 @@ flask_cors.CORS(app)
 DB_NAME = os.path.join(base_dir, "wnba.db")
 MODEL_PATH = os.path.join(base_dir, "wnba_spread_model.pkl")
 METADATA_PATH = os.path.join(base_dir, "model_metadata.json")
+TOTAL_MODEL_PATH = os.path.join(base_dir, "wnba_total_model.pkl")
+TOTAL_METADATA_PATH = os.path.join(base_dir, "total_model_metadata.json")
 
 # Global cache variables
 MODEL = None
 METADATA = None
+TOTAL_MODEL = None
+TOTAL_METADATA = None
 ALL_TEAMS = []
 LATEST_TEAM_EMAS = {}
 OVERALL_EMA_MEANS = {}
@@ -179,19 +183,27 @@ def compute_h2h_bias(conn, home_team, away_team, date):
 
 def init_app_data():
     """Performs all startup calculations and caches values in memory."""
-    global MODEL, METADATA, ALL_TEAMS, LATEST_TEAM_EMAS, OVERALL_EMA_MEANS
+    global MODEL, METADATA, TOTAL_MODEL, TOTAL_METADATA, ALL_TEAMS, LATEST_TEAM_EMAS, OVERALL_EMA_MEANS
     global TALENT_FLOORS_2026, LATEST_REF_EMAS, GLOBAL_REF_DEFAULTS, LATEST_ELOS
     global WNBA_2026_SCHEDULE
     
     # Load model and metadata
     if not os.path.exists(MODEL_PATH) or not os.path.exists(METADATA_PATH):
         raise FileNotFoundError("Trained model or metadata file is missing. Run train_model.py first.")
+    if not os.path.exists(TOTAL_MODEL_PATH) or not os.path.exists(TOTAL_METADATA_PATH):
+        raise FileNotFoundError("Trained totals model or metadata file is missing. Run train_totals_model.py first.")
         
     with open(MODEL_PATH, 'rb') as f:
         MODEL = pickle.load(f)
         
     with open(METADATA_PATH, 'r') as f:
         METADATA = json.load(f)
+        
+    with open(TOTAL_MODEL_PATH, 'rb') as f:
+        TOTAL_MODEL = pickle.load(f)
+        
+    with open(TOTAL_METADATA_PATH, 'r') as f:
+        TOTAL_METADATA = json.load(f)
         
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -415,6 +427,8 @@ def run_simulation():
     except ValueError:
         bankroll_cap = 0.10
 
+    betting_mode = request.args.get('betting_mode', 'spread')
+    
     simulate_rest = simulate_rest_val.lower() == 'true'
     upcoming_only = upcoming_only_val.lower() == 'true'
     result = simulate_season.run_simulation(
@@ -427,7 +441,8 @@ def run_simulation():
         simulate_rest=simulate_rest,
         upcoming_only=upcoming_only,
         kelly_fraction=kelly_fraction,
-        bankroll_cap=bankroll_cap
+        bankroll_cap=bankroll_cap,
+        betting_mode=betting_mode
     )
     if "error" in result:
         return jsonify(result), 400
@@ -489,7 +504,7 @@ def auto_settle_bets(cursor):
         
         # Check raw_matches for match on that date and with those teams
         cursor.execute("""
-            SELECT HomeScore, AwayScore, HomeTeam, AwayTeam
+            SELECT HomeScore, AwayScore, HomeTeam, AwayTeam, OverUnder
             FROM raw_matches
             WHERE Date = ? AND (
                 (HomeTeam = ? AND AwayTeam = ?) OR
@@ -499,47 +514,71 @@ def auto_settle_bets(cursor):
         match_row = cursor.fetchone()
         
         if match_row:
-            home_score, away_score, actual_home_team, actual_away_team = match_row
+            home_score, away_score, actual_home_team, actual_away_team, over_under = match_row
             if home_score < 0 or away_score < 0:
                 continue
             
-            # Determine winner
-            if home_score > away_score:
-                actual_winner = actual_home_team
-            else:
-                actual_winner = actual_away_team
-                
-            # Determine if the bet was on the home team or away team
-            bet_on_home = False
-            bet_on_away = False
-            
             rec_side_clean = recommended_side.strip().upper()
-            if rec_side_clean == 'HOME':
-                bet_on_home = True
-            elif rec_side_clean == 'AWAY':
-                bet_on_away = True
-            elif team_matches(recommended_side, home_team):
-                bet_on_home = True
-            elif team_matches(recommended_side, away_team):
-                bet_on_away = True
-                
-            # Find which team the user betted on
-            if bet_on_home:
-                betted_team = home_full
-            elif bet_on_away:
-                betted_team = away_full
-            else:
-                betted_team = recommended_side
-                
-            # Check if betted_team matches actual_winner
-            won = team_matches(betted_team, actual_winner)
             
-            if won:
-                outcome = 'won'
-                bankroll_change = wager_amount * (odds - 1.0)
+            if rec_side_clean in ('OVER', 'UNDER'):
+                actual_total = home_score + away_score
+                if over_under is None or over_under <= 0:
+                    continue  # Can't settle without line
+                    
+                if actual_total == over_under:
+                    outcome = 'push'
+                    bankroll_change = 0.0
+                elif rec_side_clean == 'OVER':
+                    if actual_total > over_under:
+                        outcome = 'won'
+                        bankroll_change = wager_amount * (odds - 1.0)
+                    else:
+                        outcome = 'lost'
+                        bankroll_change = -wager_amount
+                else:  # UNDER
+                    if actual_total < over_under:
+                        outcome = 'won'
+                        bankroll_change = wager_amount * (odds - 1.0)
+                    else:
+                        outcome = 'lost'
+                        bankroll_change = -wager_amount
             else:
-                outcome = 'lost'
-                bankroll_change = -wager_amount
+                # Determine winner
+                if home_score > away_score:
+                    actual_winner = actual_home_team
+                else:
+                    actual_winner = actual_away_team
+                    
+                # Determine if the bet was on the home team or away team
+                bet_on_home = False
+                bet_on_away = False
+                
+                if rec_side_clean == 'HOME':
+                    bet_on_home = True
+                elif rec_side_clean == 'AWAY':
+                    bet_on_away = True
+                elif team_matches(recommended_side, home_team):
+                    bet_on_home = True
+                elif team_matches(recommended_side, away_team):
+                    bet_on_away = True
+                    
+                # Find which team the user betted on
+                if bet_on_home:
+                    betted_team = home_full
+                elif bet_on_away:
+                    betted_team = away_full
+                else:
+                    betted_team = recommended_side
+                    
+                # Check if betted_team matches actual_winner
+                won = team_matches(betted_team, actual_winner)
+                
+                if won:
+                    outcome = 'won'
+                    bankroll_change = wager_amount * (odds - 1.0)
+                else:
+                    outcome = 'lost'
+                    bankroll_change = -wager_amount
                 
             cursor.execute("""
                 UPDATE confirmed_bets
@@ -827,6 +866,42 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
         if 'stage1_calibrator' in MODEL and MODEL['stage1_calibrator'] is not None:
             home_win_prob = float(MODEL['stage1_calibrator'].predict([home_win_prob])[0])
             
+    # Predict totals and over/under probabilities
+    if fd_match:
+        t_features_list = TOTAL_METADATA['full_features']
+        t_features_df = pd.DataFrame([feature_dict])[t_features_list]
+        
+        t_residual_pred = float(TOTAL_MODEL['stage2_regressor'].predict(t_features_df)[0])
+        predicted_total = over_under + t_residual_pred
+        
+        t_p10 = float(TOTAL_MODEL['quantile_10'].predict(t_features_df)[0])
+        t_p90 = float(TOTAL_MODEL['quantile_90'].predict(t_features_df)[0])
+        t_dynamic_sigma = (t_p90 - t_p10) / 2.563
+        t_dynamic_sigma = max(t_dynamic_sigma, 1e-5)
+        
+        t_p_cdf = float(norm.cdf(t_residual_pred / t_dynamic_sigma))
+        t_p_clf = float(TOTAL_MODEL['stage2_classifier'].predict_proba(t_features_df)[0, 1])
+        over_win_prob = 0.5 * t_p_cdf + 0.5 * t_p_clf
+        
+        if 'stage2_calibrator' in TOTAL_MODEL and TOTAL_MODEL['stage2_calibrator'] is not None:
+            over_win_prob = float(TOTAL_MODEL['stage2_calibrator'].predict([over_win_prob])[0])
+    else:
+        t_features_list = TOTAL_METADATA['baseline_features']
+        t_features_df = pd.DataFrame([feature_dict])[t_features_list]
+        
+        predicted_total = float(TOTAL_MODEL['stage1_regressor'].predict(t_features_df)[0])
+        t_dynamic_sigma = TOTAL_METADATA.get('sigma_residuals', 12.0)
+        t_median_total = TOTAL_METADATA.get('median_total', 160.0)
+        
+        t_p_cdf = float(norm.cdf((predicted_total - t_median_total) / t_dynamic_sigma))
+        t_p_clf = float(TOTAL_MODEL['stage1_classifier'].predict_proba(t_features_df)[0, 1])
+        over_win_prob = 0.5 * t_p_cdf + 0.5 * t_p_clf
+        
+        if 'stage1_calibrator' in TOTAL_MODEL and TOTAL_MODEL['stage1_calibrator'] is not None:
+            over_win_prob = float(TOTAL_MODEL['stage1_calibrator'].predict([over_win_prob])[0])
+            
+    under_win_prob = 1.0 - over_win_prob
+            
     away_win_prob = 1.0 - home_win_prob
     
     return {
@@ -834,6 +909,10 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
         'dynamic_sigma': round(dynamic_sigma, 3),
         'home_win_probability': round(home_win_prob * 100, 1),
         'away_win_probability': round(away_win_prob * 100, 1),
+        'predicted_total': round(predicted_total, 2),
+        'total_dynamic_sigma': round(t_dynamic_sigma, 3),
+        'over_probability': round(over_win_prob * 100, 1),
+        'under_probability': round(under_win_prob * 100, 1),
         'home_health': home_health,
         'away_health': away_health,
         'odds': {
@@ -1086,19 +1165,26 @@ def confirm_bet():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     try:
-        # Check if exists
-        cursor.execute("""
-            SELECT id FROM confirmed_bets 
-            WHERE match_date = ? AND home_team = ? AND away_team = ?
-        """, (match_date, home_abbr, away_abbr))
+        # Check if exists (separating spreads from totals)
+        is_totals = recommended_side.strip().upper() in ('OVER', 'UNDER')
+        if is_totals:
+            cursor.execute("""
+                SELECT id FROM confirmed_bets 
+                WHERE match_date = ? AND home_team = ? AND away_team = ? AND recommended_side IN ('OVER', 'UNDER')
+            """, (match_date, home_abbr, away_abbr))
+        else:
+            cursor.execute("""
+                SELECT id FROM confirmed_bets 
+                WHERE match_date = ? AND home_team = ? AND away_team = ? AND recommended_side NOT IN ('OVER', 'UNDER')
+            """, (match_date, home_abbr, away_abbr))
         row = cursor.fetchone()
         
         if row:
             cursor.execute("""
                 UPDATE confirmed_bets
                 SET recommended_side = ?, wager_type = ?, wager_amount = ?, odds = ?, outcome = NULL, bankroll_change = ?
-                WHERE match_date = ? AND home_team = ? AND away_team = ?
-            """, (recommended_side, wager_type, wager_amount, odds, -wager_amount, match_date, home_abbr, away_abbr))
+                WHERE id = ?
+            """, (recommended_side, wager_type, wager_amount, odds, -wager_amount, row[0]))
             message = 'Bet updated successfully'
         else:
             cursor.execute("""
@@ -1107,17 +1193,18 @@ def confirm_bet():
             """, (match_date, home_abbr, away_abbr, recommended_side, wager_type, wager_amount, odds, -wager_amount))
             message = 'Bet confirmed successfully'
             
-        # Update raw_matches with custom odds if they are provided
+        # Update raw_matches with custom odds/totals if they are provided
         custom_home_odds = data.get('custom_home_odds')
         custom_away_odds = data.get('custom_away_odds')
+        custom_over_under = data.get('custom_over_under')
         
-        if custom_home_odds is not None or custom_away_odds is not None:
+        if custom_home_odds is not None or custom_away_odds is not None or custom_over_under is not None:
             home_full = REVERSE_TEAM_MAP.get(home_abbr.upper(), home_abbr)
             away_full = REVERSE_TEAM_MAP.get(away_abbr.upper(), away_abbr)
             
             # Check if record exists in raw_matches
             cursor.execute("""
-                SELECT id FROM raw_matches 
+                SELECT id, BookieHomeOdds, BookieAwayOdds, OverUnder FROM raw_matches 
                 WHERE Date = ? AND (
                     (HomeTeam = ? AND AwayTeam = ?) OR
                     (HomeTeam = ? AND AwayTeam = ?)
@@ -1126,18 +1213,23 @@ def confirm_bet():
             match_row = cursor.fetchone()
             
             if match_row:
+                m_id, existing_home_odds, existing_away_odds, existing_ou = match_row
+                new_home_odds = custom_home_odds if custom_home_odds is not None else existing_home_odds
+                new_away_odds = custom_away_odds if custom_away_odds is not None else existing_away_odds
+                new_ou = custom_over_under if custom_over_under is not None else existing_ou
+                
                 cursor.execute("""
                     UPDATE raw_matches
-                    SET BookieHomeOdds = ?, BookieAwayOdds = ?, IsFanduelOdds = 1
+                    SET BookieHomeOdds = ?, BookieAwayOdds = ?, OverUnder = ?, IsFanduelOdds = 1
                     WHERE id = ?
-                """, (custom_home_odds, custom_away_odds, match_row[0]))
+                """, (new_home_odds, new_away_odds, new_ou, m_id))
             else:
                 cursor.execute("""
                     INSERT INTO raw_matches (
                         Date, HomeTeam, AwayTeam, HomeScore, AwayScore,
-                        BookieHomeOdds, BookieAwayOdds, IsFanduelOdds
-                    ) VALUES (?, ?, ?, -1, -1, ?, ?, 1)
-                """, (match_date, home_full, away_full, custom_home_odds, custom_away_odds))
+                        BookieHomeOdds, BookieAwayOdds, OverUnder, IsFanduelOdds
+                    ) VALUES (?, ?, ?, -1, -1, ?, ?, ?, 1)
+                """, (match_date, home_full, away_full, custom_home_odds, custom_away_odds, custom_over_under))
             
         conn.commit()
         return jsonify({'message': message})
@@ -1162,24 +1254,40 @@ def delete_bet():
     home_abbr = get_team_abbr(home_team)
     away_abbr = get_team_abbr(away_team)
     
+    is_totals = data.get('is_totals', False)
+    
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     try:
+        if is_totals:
+            cursor.execute("""
+                DELETE FROM confirmed_bets
+                WHERE match_date = ? AND home_team = ? AND away_team = ? AND recommended_side IN ('OVER', 'UNDER')
+            """, (match_date, home_abbr, away_abbr))
+        else:
+            cursor.execute("""
+                DELETE FROM confirmed_bets
+                WHERE match_date = ? AND home_team = ? AND away_team = ? AND recommended_side NOT IN ('OVER', 'UNDER')
+            """, (match_date, home_abbr, away_abbr))
+            
+        # Check if there are any remaining confirmed bets for this game before cleaning up raw_matches
         cursor.execute("""
-            DELETE FROM confirmed_bets
+            SELECT COUNT(*) FROM confirmed_bets
             WHERE match_date = ? AND home_team = ? AND away_team = ?
         """, (match_date, home_abbr, away_abbr))
+        has_any_confirmed = cursor.fetchone()[0] > 0
         
-        # Also clean up unplayed placeholder matches from raw_matches
-        home_full = REVERSE_TEAM_MAP.get(home_abbr.upper(), home_abbr)
-        away_full = REVERSE_TEAM_MAP.get(away_abbr.upper(), away_abbr)
-        cursor.execute("""
-            DELETE FROM raw_matches
-            WHERE Date = ? AND HomeScore = -1 AND (
-                (HomeTeam = ? AND AwayTeam = ?) OR
-                (HomeTeam = ? AND AwayTeam = ?)
-            )
-        """, (match_date, home_full, away_full, away_full, home_full))
+        if not has_any_confirmed:
+            # Also clean up unplayed placeholder matches from raw_matches
+            home_full = REVERSE_TEAM_MAP.get(home_abbr.upper(), home_abbr)
+            away_full = REVERSE_TEAM_MAP.get(away_abbr.upper(), away_abbr)
+            cursor.execute("""
+                DELETE FROM raw_matches
+                WHERE Date = ? AND HomeScore = -1 AND (
+                    (HomeTeam = ? AND AwayTeam = ?) OR
+                    (HomeTeam = ? AND AwayTeam = ?)
+                )
+            """, (match_date, home_full, away_full, away_full, home_full))
         
         conn.commit()
         return jsonify({'message': 'Bet deleted successfully'})
@@ -1253,12 +1361,13 @@ def get_upcoming_bets():
             FROM confirmed_bets
         """)
         bet_rows = cursor.fetchall()
-        confirmed_bets_map = {}
+        confirmed_spread_bets_map = {}
+        confirmed_total_bets_map = {}
         for r in bet_rows:
             b_id, b_date, b_home, b_away, b_rec, b_type, b_amount, b_odds, b_outcome, b_change, b_at = r
             h_abbr = get_team_abbr(b_home)
             a_abbr = get_team_abbr(b_away)
-            confirmed_bets_map[(b_date, h_abbr, a_abbr)] = {
+            payload = {
                 'id': b_id,
                 'match_date': b_date,
                 'home_team': b_home,
@@ -1271,6 +1380,10 @@ def get_upcoming_bets():
                 'bankroll_change': b_change,
                 'confirmed_at': b_at
             }
+            if b_rec.strip().upper() in ('OVER', 'UNDER'):
+                confirmed_total_bets_map[(b_date, h_abbr, a_abbr)] = payload
+            else:
+                confirmed_spread_bets_map[(b_date, h_abbr, a_abbr)] = payload
         
         # Fetch live FanDuel odds
         try:
@@ -1331,7 +1444,8 @@ def get_upcoming_bets():
             volume = match['volume']
             
             key = (match_date, get_team_abbr(home_abbr), get_team_abbr(away_abbr))
-            confirmed_bet = confirmed_bets_map.get(key, None)
+            confirmed_spread_bet = confirmed_spread_bets_map.get(key, None)
+            confirmed_total_bet = confirmed_total_bets_map.get(key, None)
             
             norm_home = normalize_team_name(home_abbr)
             norm_away = normalize_team_name(away_abbr)
@@ -1385,6 +1499,31 @@ def get_upcoming_bets():
                 print(f"Prediction failed for matchup {home_team_full} vs {away_team_full} on {match_date}: {e}")
                 pred = None
             
+            # Query custom overrides from raw_matches
+            cursor.execute("""
+                SELECT BookieHomeOdds, BookieAwayOdds, OverUnder, IsFanduelOdds FROM raw_matches
+                WHERE Date = ? AND (
+                    (HomeTeam = ? AND AwayTeam = ?) OR
+                    (HomeTeam = ? AND AwayTeam = ?)
+                )
+            """, (match_date, home_team_full, away_team_full, away_team_full, home_team_full))
+            db_row = cursor.fetchone()
+            
+            custom_home_odds = None
+            custom_away_odds = None
+            custom_over_odds = None
+            custom_under_odds = None
+            custom_over_under = None
+            
+            if db_row and db_row[3] == 1:
+                if db_row[2] is not None:
+                    custom_over_odds = db_row[0]
+                    custom_under_odds = db_row[1]
+                    custom_over_under = db_row[2]
+                else:
+                    custom_home_odds = db_row[0]
+                    custom_away_odds = db_row[1]
+
             if fd_match:
                 # Merge FanDuel odds
                 home_odds = fd_match['home_odds']
@@ -1404,6 +1543,13 @@ def get_upcoming_bets():
                     'away_implied_prob': round(away_implied_prob * 100, 1),
                     'closing_spread': fd_match['closing_spread'],
                     'over_under': fd_match['over_under'],
+                    'over_odds': fd_match.get('over_odds', 1.91),
+                    'under_odds': fd_match.get('under_odds', 1.91),
+                    'custom_home_odds': custom_home_odds,
+                    'custom_away_odds': custom_away_odds,
+                    'custom_over_odds': custom_over_odds,
+                    'custom_under_odds': custom_under_odds,
+                    'custom_over_under': custom_over_under,
                     'is_fanduel': True
                 }
             else:
@@ -1419,6 +1565,13 @@ def get_upcoming_bets():
                     'away_implied_prob': round((1.0 - bm_odds['Prob_Home']) * 100, 1),
                     'closing_spread': bm_odds['ClosingSpread'],
                     'over_under': bm_odds['OverUnder'],
+                    'over_odds': 1.91,
+                    'under_odds': 1.91,
+                    'custom_home_odds': custom_home_odds,
+                    'custom_away_odds': custom_away_odds,
+                    'custom_over_odds': custom_over_odds,
+                    'custom_under_odds': custom_under_odds,
+                    'custom_over_under': custom_over_under,
                     'is_fanduel': False
                 }
                 
@@ -1453,6 +1606,10 @@ def get_upcoming_bets():
                 'away_prob': pred['away_win_probability'] if pred else 50.0,
                 'predicted_spread': pred['predicted_spread'] if pred else 0.0,
                 'dynamic_sigma': pred['dynamic_sigma'] if pred else None,
+                'predicted_total': pred['predicted_total'] if pred else 160.0,
+                'total_dynamic_sigma': pred['total_dynamic_sigma'] if pred else None,
+                'over_probability': pred['over_probability'] if pred else 50.0,
+                'under_probability': pred['under_probability'] if pred else 50.0,
                 'polymarket_home_prob': round(home_yes_price * 100, 1),
                 'polymarket_away_prob': round(away_yes_price * 100, 1),
                 'home_price': home_yes_price,
@@ -1463,7 +1620,8 @@ def get_upcoming_bets():
                 'home_health': pred['home_health'] if pred else None,
                 'away_health': pred['away_health'] if pred else None,
                 'bookmaker': bookmaker_payload,
-                'confirmed_bet': confirmed_bet,
+                'confirmed_spread_bet': confirmed_spread_bet,
+                'confirmed_total_bet': confirmed_total_bet,
                 'has_happened': has_happened,
                 'home_score': home_score,
                 'away_score': away_score

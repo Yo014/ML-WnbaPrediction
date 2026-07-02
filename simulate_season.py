@@ -4,7 +4,7 @@ import json
 import pandas as pd
 import numpy as np
 from scipy.stats import norm
-from predict import predict_spread_and_win_prob
+from predict import predict_spread_and_win_prob, predict_total_and_over_prob
 
 def compute_metrics(probs, actuals):
     """Calculates Accuracy, Brier Score, and Log Loss for a series of probabilities and outcomes."""
@@ -39,7 +39,7 @@ def compute_metrics(probs, actuals):
         "log_loss": round(logloss, 4)
     }
 
-def run_simulation(season, initial_bankroll=1000.0, min_edge=0.03, wager_type='flat', flat_wager_pct=0.02, market_source='bookie', simulate_rest=False, upcoming_only=False, kelly_fraction=0.10, bankroll_cap=0.10):
+def run_simulation(season, initial_bankroll=1000.0, min_edge=0.03, wager_type='flat', flat_wager_pct=0.02, market_source='bookie', simulate_rest=False, upcoming_only=False, kelly_fraction=0.10, bankroll_cap=0.10, betting_mode='spread'):
     """
     Runs a season simulation:
     1. Loads the XGBoost model, metadata, and ready-to-use dataset.
@@ -52,6 +52,8 @@ def run_simulation(season, initial_bankroll=1000.0, min_edge=0.03, wager_type='f
     base_dir = os.path.dirname(os.path.abspath(__file__))
     model_path = os.path.join(base_dir, "wnba_spread_model.pkl")
     metadata_path = os.path.join(base_dir, "model_metadata.json")
+    t_model_path = os.path.join(base_dir, "wnba_total_model.pkl")
+    t_metadata_path = os.path.join(base_dir, "total_model_metadata.json")
     data_path = os.path.join(base_dir, "ml_ready_data.csv")
     
     # 2. Check for file existence
@@ -59,6 +61,10 @@ def run_simulation(season, initial_bankroll=1000.0, min_edge=0.03, wager_type='f
         return {"error": f"Model file not found at {model_path}"}
     if not os.path.exists(metadata_path):
         return {"error": f"Metadata file not found at {metadata_path}"}
+    if not os.path.exists(t_model_path):
+        return {"error": f"Totals model file not found at {t_model_path}"}
+    if not os.path.exists(t_metadata_path):
+        return {"error": f"Totals metadata file not found at {t_metadata_path}"}
     if not os.path.exists(data_path):
         return {"error": f"Data file not found at {data_path}"}
         
@@ -69,8 +75,13 @@ def run_simulation(season, initial_bankroll=1000.0, min_edge=0.03, wager_type='f
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
         sigma_residuals = metadata.get('sigma_residuals', 10.0)
+        
+        with open(t_model_path, 'rb') as f:
+            t_model = pickle.load(f)
+        with open(t_metadata_path, 'r') as f:
+            t_metadata = json.load(f)
     except Exception as e:
-        return {"error": f"Failed to load model or metadata: {str(e)}"}
+        return {"error": f"Failed to load models or metadata: {str(e)}"}
         
     # 4. Load dataset and filter for the season
     try:
@@ -90,6 +101,10 @@ def run_simulation(season, initial_bankroll=1000.0, min_edge=0.03, wager_type='f
         preds_df = predict_spread_and_win_prob(model, metadata, df_season)
         predicted_spreads = preds_df['predicted_spread'].values
         model_probs_home = preds_df['home_win_probability'].values
+        
+        t_preds_df = predict_total_and_over_prob(t_model, t_metadata, df_season)
+        predicted_totals = t_preds_df['predicted_total'].values
+        model_probs_over = t_preds_df['over_win_probability'].values
     except Exception as e:
         return {"error": f"Prediction failed in simulation: {str(e)}"}
     
@@ -110,6 +125,8 @@ def run_simulation(season, initial_bankroll=1000.0, min_edge=0.03, wager_type='f
     df_combined = df_season.copy()
     df_combined['predicted_spread'] = predicted_spreads
     df_combined['model_prob_home'] = model_probs_home
+    df_combined['predicted_total'] = predicted_totals
+    df_combined['model_prob_over'] = model_probs_over
     
     # 7. Fetch and simulate remaining unplayed games
     unplayed_games = []
@@ -249,6 +266,8 @@ def run_simulation(season, initial_bankroll=1000.0, min_edge=0.03, wager_type='f
                     'OverUnder': over_under,
                     'predicted_spread': pred_spread,
                     'model_prob_home': model_prob,
+                    'predicted_total': pred_res['predicted_total'],
+                    'model_prob_over': pred_res['over_probability'] / 100.0,
                     'IsFanduelOdds': is_fd,
                     'Season': 2026
                 })
@@ -390,41 +409,94 @@ def run_simulation(season, initial_bankroll=1000.0, min_edge=0.03, wager_type='f
         bet_payout = 0.0
         bet_edge = 0.0
         
-        if p_home_market is not None and odds_home is not None and odds_away is not None and bankroll > 0:
-            edge_home = model_prob_home - p_home_market
-            edge_away = model_prob_away - p_away_market
-            
-            if edge_home >= min_edge:
-                bet_placed = True
-                bet_team = home
-                bet_odds = odds_home
-                bet_edge = edge_home
-            elif edge_away >= min_edge:
-                bet_placed = True
-                bet_team = away
-                bet_odds = odds_away
-                bet_edge = edge_away
+        possible_bets = []
+        over_under = row.get('OverUnder')
+        
+        # 1. Point Spread Bet
+        if betting_mode in ('spread', 'both'):
+            if p_home_market is not None and odds_home is not None and odds_away is not None and bankroll > 0:
+                edge_home = model_prob_home - p_home_market
+                edge_away = model_prob_away - p_away_market
                 
-            if bet_placed:
-                # Calculate wager size
-                if wager_type == 'kelly':
-                    p_bet = model_prob_home if bet_team == home else model_prob_away
-                    if bet_odds > 1.0:
-                        f_star = (p_bet * bet_odds - 1.0) / (bet_odds - 1.0)
-                        kelly_frac = kelly_fraction * f_star
-                        kelly_frac = max(0.0, min(bankroll_cap, kelly_frac))
-                        bet_wager = kelly_frac * bankroll
-                    else:
-                        bet_wager = 0.0
-                else: # flat
-                    bet_wager = flat_wager_pct * initial_bankroll
+                if edge_home >= min_edge:
+                    possible_bets.append({
+                        'type': 'spread',
+                        'bet_team': home,
+                        'odds': odds_home,
+                        'edge': edge_home,
+                        'prob': model_prob_home
+                    })
+                elif edge_away >= min_edge:
+                    possible_bets.append({
+                        'type': 'spread',
+                        'bet_team': away,
+                        'odds': odds_away,
+                        'edge': edge_away,
+                        'prob': model_prob_away
+                    })
                     
-                bet_wager = round(bet_wager, 2)
-                if bet_wager > bankroll:
-                    bet_wager = bankroll
+        # 2. Over/Under Bet
+        if betting_mode in ('total', 'both'):
+            if not pd.isna(over_under) and over_under > 0 and bankroll > 0:
+                model_prob_over = float(row.get('model_prob_over', 0.5))
+                model_prob_under = 1.0 - model_prob_over
+                
+                # Standard bookmaker price is -110 (1.91 decimal)
+                odds_total = 1.91
+                market_prob_total = 1.0 / odds_total  # 0.5236
+                
+                edge_over = model_prob_over - market_prob_total
+                edge_under = model_prob_under - market_prob_total
+                
+                if edge_over >= min_edge:
+                    possible_bets.append({
+                        'type': 'total',
+                        'bet_team': 'Over',
+                        'odds': odds_total,
+                        'edge': edge_over,
+                        'prob': model_prob_over
+                    })
+                elif edge_under >= min_edge:
+                    possible_bets.append({
+                        'type': 'total',
+                        'bet_team': 'Under',
+                        'odds': odds_total,
+                        'edge': edge_under,
+                        'prob': model_prob_under
+                    })
                     
-                if bet_wager > 0:
-                    # Resolve bet
+        # Select best bet based on edge
+        best_bet = None
+        if possible_bets:
+            possible_bets.sort(key=lambda x: x['edge'], reverse=True)
+            best_bet = possible_bets[0]
+            
+        if best_bet and bankroll > 0:
+            bet_placed = True
+            bet_type = best_bet['type']
+            bet_team = best_bet['bet_team']
+            bet_odds = best_bet['odds']
+            bet_edge = best_bet['edge']
+            b_prob = best_bet['prob']
+            
+            # Calculate wager size
+            if wager_type == 'kelly':
+                if bet_odds > 1.0:
+                    f_star = (b_prob * bet_odds - 1.0) / (bet_odds - 1.0)
+                    kelly_frac = kelly_fraction * f_star
+                    kelly_frac = max(0.0, min(bankroll_cap, kelly_frac))
+                    bet_wager = kelly_frac * bankroll
+                else:
+                    bet_wager = 0.0
+            else:  # flat
+                bet_wager = flat_wager_pct * initial_bankroll
+                
+            bet_wager = round(bet_wager, 2)
+            if bet_wager > bankroll:
+                bet_wager = bankroll
+                
+            if bet_wager > 0:
+                if bet_type == 'spread':
                     if bet_team == actual_winner:
                         bet_win = True
                         bet_payout = round(bet_wager * (bet_odds - 1.0), 2)
@@ -433,18 +505,41 @@ def run_simulation(season, initial_bankroll=1000.0, min_edge=0.03, wager_type='f
                         bet_win = False
                         bet_payout = -bet_wager
                         bankroll += bet_payout
-                        
-                    bankroll = round(max(0.0, bankroll), 2)
-                    total_bets_count += 1
-                    if bet_win:
-                        won_bets_count += 1
-                    total_amount_wagered += bet_wager
-                    
-                    bankroll_history.append({
-                        "date": str(row['Date']),
-                        "bankroll": bankroll,
-                        "cumulative_profit": round(bankroll - initial_bankroll, 2)
-                    })
+                else:  # total
+                    actual_total = home_score + away_score
+                    if actual_total == over_under:
+                        bet_win = 'push'
+                        bet_payout = 0.0
+                    elif bet_team == 'Over':
+                        if actual_total > over_under:
+                            bet_win = True
+                            bet_payout = round(bet_wager * (bet_odds - 1.0), 2)
+                            bankroll += bet_payout
+                        else:
+                            bet_win = False
+                            bet_payout = -bet_wager
+                            bankroll += bet_payout
+                    else:  # Under
+                        if actual_total < over_under:
+                            bet_win = True
+                            bet_payout = round(bet_wager * (bet_odds - 1.0), 2)
+                            bankroll += bet_payout
+                        else:
+                            bet_win = False
+                            bet_payout = -bet_wager
+                            bankroll += bet_payout
+                            
+                bankroll = round(max(0.0, bankroll), 2)
+                total_bets_count += 1
+                if bet_win is True:
+                    won_bets_count += 1
+                total_amount_wagered += bet_wager
+                
+                bankroll_history.append({
+                    "date": str(row['Date']),
+                    "bankroll": bankroll,
+                    "cumulative_profit": round(bankroll - initial_bankroll, 2)
+                })
                     
         # Game log record
         games.append({

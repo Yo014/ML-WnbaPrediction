@@ -125,7 +125,7 @@ def create_tables(db_path=DB_NAME):
         outcome TEXT,
         bankroll_change REAL,
         confirmed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE (match_date, home_team, away_team)
+        UNIQUE (match_date, home_team, away_team, recommended_side)
     );
     """)
 

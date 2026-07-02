@@ -236,6 +236,16 @@ function BankrollChart({ history, initialBankroll }) {
   );
 }
 
+// High-precision approximation of the cumulative distribution function for a normal distribution
+function normalCDF(x, mean, std) {
+  const z = (x - mean) / std;
+  const t = 1.0 / (1.0 + 0.2316419 * Math.abs(z));
+  const d = 0.39894228 * Math.exp(-z * z / 2.0);
+  const p = d * t * (0.31938153 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+  const val = z >= 0.0 ? 1.0 - p : p;
+  return Math.round(val * 1000) / 10; // return as percentage, e.g. 52.3
+}
+
 export default function UpcomingBets() {
   // Config inputs
   const [initialBankroll, setInitialBankroll] = useState(() => {
@@ -246,6 +256,7 @@ export default function UpcomingBets() {
   const [flatWagerPct, setFlatWagerPct] = useState(12.0); // entered as percentage, e.g. 12.0%
   const [kellyCap, setKellyCap] = useState(0.10); // bankroll cap fraction, defaulting to 1/10
   const [marketSource, setMarketSource] = useState('polymarket'); // 'polymarket' or 'bookie'
+  const [bettingMode, setBettingMode] = useState('spread'); // 'spread' or 'total'
   const [customOdds, setCustomOdds] = useState(() => {
     const saved = localStorage.getItem('wnba_custom_odds');
     return saved !== null ? JSON.parse(saved) : {};
@@ -268,7 +279,7 @@ export default function UpcomingBets() {
         [gameKey]: nextOdds
       };
 
-      if (!nextOdds.home_odds && !nextOdds.away_odds) {
+      if (!nextOdds.home_odds && !nextOdds.away_odds && !nextOdds.over_odds && !nextOdds.under_odds && !nextOdds.over_under) {
         delete updated[gameKey];
       }
       return updated;
@@ -300,8 +311,18 @@ export default function UpcomingBets() {
     setError(null);
     const gameKey = `${bet.date}_${bet.home_team_abbr}_${bet.away_team_abbr}`;
     const custom = customOdds[gameKey];
-    const customHome = custom?.home_odds ? parseFloat(custom.home_odds) : null;
-    const customAway = custom?.away_odds ? parseFloat(custom.away_odds) : null;
+    
+    const customHome = bettingMode === 'spread'
+      ? (custom?.home_odds ? parseFloat(custom.home_odds) : null)
+      : (custom?.over_odds ? parseFloat(custom.over_odds) : null);
+      
+    const customAway = bettingMode === 'spread'
+      ? (custom?.away_odds ? parseFloat(custom.away_odds) : null)
+      : (custom?.under_odds ? parseFloat(custom.under_odds) : null);
+      
+    const customOverUnder = bettingMode === 'spread'
+      ? null
+      : (custom?.over_under ? parseFloat(custom.over_under) : null);
 
     try {
       const res = await fetch('/api/confirm_bet', {
@@ -316,7 +337,8 @@ export default function UpcomingBets() {
           wager_amount: wagerAmount,
           odds: odds,
           custom_home_odds: customHome,
-          custom_away_odds: customAway
+          custom_away_odds: customAway,
+          custom_over_under: customOverUnder
         })
       });
       if (!res.ok) {
@@ -324,6 +346,7 @@ export default function UpcomingBets() {
         throw new Error(errData.error || `Status ${res.status}`);
       }
       await fetchConfirmedBets();
+      await fetchUpcomingBets();
     } catch (err) {
       setError(`Failed to confirm bet: ${err.message}`);
     }
@@ -338,7 +361,8 @@ export default function UpcomingBets() {
         body: JSON.stringify({
           match_date: bet.date,
           home_team: bet.home_team_abbr,
-          away_team: bet.away_team_abbr
+          away_team: bet.away_team_abbr,
+          is_totals: bettingMode === 'total'
         })
       });
       if (!res.ok) {
@@ -346,6 +370,7 @@ export default function UpcomingBets() {
         throw new Error(errData.error || `Status ${res.status}`);
       }
       await fetchConfirmedBets();
+      await fetchUpcomingBets();
     } catch (err) {
       setError(`Failed to delete bet: ${err.message}`);
     }
@@ -372,15 +397,21 @@ export default function UpcomingBets() {
     return n;
   };
 
-  const getTrackedBet = (bet) => {
+  const getTrackedBet = (bet, type) => {
+    if (!confirmedBets || confirmedBets.length === 0) return null;
     const betHomeAbbr = getDbAbbr(bet.home_team_abbr) || getDbAbbr(bet.home_team);
     const betAwayAbbr = getDbAbbr(bet.away_team_abbr) || getDbAbbr(bet.away_team);
     return confirmedBets.find(cb => {
       const cbHomeAbbr = getDbAbbr(cb.home_team);
       const cbAwayAbbr = getDbAbbr(cb.away_team);
-      return cb.match_date === bet.date && cbHomeAbbr === betHomeAbbr && cbAwayAbbr === betAwayAbbr;
+      const matchesMeta = cb.match_date === bet.date && cbHomeAbbr === betHomeAbbr && cbAwayAbbr === betAwayAbbr;
+      if (!matchesMeta) return false;
+      const isTotalsBet = cb.recommended_side.trim().toUpperCase() === 'OVER' || cb.recommended_side.trim().toUpperCase() === 'UNDER';
+      return type === 'total' ? isTotalsBet : !isTotalsBet;
     });
   };
+
+
 
   useEffect(() => {
     localStorage.setItem('wnba_initial_bankroll', initialBankroll);
@@ -396,6 +427,26 @@ export default function UpcomingBets() {
       }
       const data = await res.json();
       setBets(data);
+
+      // Pre-populate customOdds state from backend payloads
+      const initialCustom = {};
+      data.forEach(bet => {
+        const gameKey = `${bet.date}_${bet.home_team_abbr}_${bet.away_team_abbr}`;
+        const bm = bet.bookmaker;
+        if (bm && (bm.custom_home_odds || bm.custom_away_odds || bm.custom_over_odds || bm.custom_under_odds || bm.custom_over_under)) {
+          initialCustom[gameKey] = {
+            home_odds: bm.custom_home_odds ? bm.custom_home_odds.toString() : '',
+            away_odds: bm.custom_away_odds ? bm.custom_away_odds.toString() : '',
+            over_odds: bm.custom_over_odds ? bm.custom_over_odds.toString() : '',
+            under_odds: bm.custom_under_odds ? bm.custom_under_odds.toString() : '',
+            over_under: bm.custom_over_under ? bm.custom_over_under.toString() : ''
+          };
+        }
+      });
+      setCustomOdds(prev => ({
+        ...initialCustom,
+        ...prev
+      }));
     } catch (err) {
       setError(`Failed to fetch upcoming bets: ${err.message}`);
     } finally {
@@ -560,6 +611,21 @@ export default function UpcomingBets() {
           </div>
 
           <div className="control-group">
+            <label className="control-label" htmlFor="betting-mode-input">Betting Target</label>
+            <select
+              id="betting-mode-input"
+              className="select-input"
+              value={bettingMode}
+              onChange={(e) => setBettingMode(e.target.value)}
+              disabled={loading || scraping}
+              style={{ width: '100%' }}
+            >
+              <option value="spread">Point Spread / Money Line</option>
+              <option value="total">Over / Under Totals</option>
+            </select>
+          </div>
+
+          <div className="control-group">
             <label className="control-label" htmlFor="edge-input">Minimum Edge (%)</label>
             <input
               id="edge-input"
@@ -676,8 +742,12 @@ export default function UpcomingBets() {
                 <tr>
                   <th>Date</th>
                   <th>Matchup</th>
-                  <th style={{ textAlign: 'center' }}>Model Win Prob (H/A)</th>
-                  <th style={{ textAlign: 'center' }}>{marketSource === 'polymarket' ? 'Polymarket Price (H/A)' : 'Bookmaker Odds (H/A)'}</th>
+                  <th style={{ textAlign: 'center' }}>{bettingMode === 'spread' ? 'Model Win Prob (H/A)' : 'Model Over/Under Prob'}</th>
+                  <th style={{ textAlign: 'center' }}>
+                    {bettingMode === 'spread'
+                      ? (marketSource === 'polymarket' ? 'Polymarket Price (H/A)' : 'Bookmaker Odds (H/A)')
+                      : 'Bookmaker Line / Odds'}
+                  </th>
                   <th style={{ textAlign: 'center' }}>Recommendation</th>
                   <th style={{ textAlign: 'right' }}>Suggested Flat Wager ({flatWagerPct}%)</th>
                   <th style={{ textAlign: 'right' }}>Suggested Kelly Wager</th>
@@ -692,58 +762,7 @@ export default function UpcomingBets() {
                   // Calculate edges and odds dynamically
                   const gameKey = `${bet.date}_${bet.home_team_abbr}_${bet.away_team_abbr}`;
                   const custom = customOdds[gameKey];
-                  const trackedBet = getTrackedBet(bet);
 
-                  const homeModelProb = bet.home_prob / 100;
-                  const awayModelProb = bet.away_prob / 100;
-
-                  let homeOdds = marketSource === 'polymarket'
-                    ? (bet.home_price > 0 ? 1.0 / bet.home_price : 99.0)
-                    : (bet.bookmaker ? bet.bookmaker.home_odds : 1.90);
-                  let awayOdds = marketSource === 'polymarket'
-                    ? (bet.away_price > 0 ? 1.0 / bet.away_price : 99.0)
-                    : (bet.bookmaker ? bet.bookmaker.away_odds : 1.90);
-
-                  if (marketSource === 'bookie' && !bet.bookmaker?.is_fanduel && custom) {
-                    if (custom.home_odds) {
-                      const parsed = parseFloat(custom.home_odds);
-                      if (!isNaN(parsed) && parsed > 0) homeOdds = parsed;
-                    }
-                    if (custom.away_odds) {
-                      const parsed = parseFloat(custom.away_odds);
-                      if (!isNaN(parsed) && parsed > 0) awayOdds = parsed;
-                    }
-                  }
-
-                  let homeMarketProb = 0.5;
-                  let awayMarketProb = 0.5;
-
-                  if (marketSource === 'polymarket') {
-                    homeMarketProb = bet.home_price;
-                    awayMarketProb = bet.away_price;
-                  } else {
-                    const hasCustom = custom && (
-                      (custom.home_odds && !isNaN(parseFloat(custom.home_odds))) ||
-                      (custom.away_odds && !isNaN(parseFloat(custom.away_odds)))
-                    );
-                    if (!bet.bookmaker?.is_fanduel && hasCustom) {
-                      const p_home_raw = 1.0 / homeOdds;
-                      const p_away_raw = 1.0 / awayOdds;
-                      const sum_p = p_home_raw + p_away_raw;
-                      homeMarketProb = sum_p > 0 ? p_home_raw / sum_p : 0.5;
-                      awayMarketProb = sum_p > 0 ? p_away_raw / sum_p : 0.5;
-                    } else {
-                      homeMarketProb = bet.bookmaker ? bet.bookmaker.home_implied_prob / 100 : 0.5;
-                      awayMarketProb = bet.bookmaker ? bet.bookmaker.away_implied_prob / 100 : 0.5;
-                    }
-                  }
-
-                  const homeEdge = homeModelProb - homeMarketProb;
-                  const awayEdge = awayModelProb - awayMarketProb;
-
-                  const minEdge = minEdgePct / 100;
-
-                  // Determine if there is a bet, and which side is favored
                   let suggestedBet = 'No Bet';
                   let activeEdge = 0;
                   let activeTeam = '';
@@ -751,24 +770,131 @@ export default function UpcomingBets() {
                   let activeOdds = 1.90;
                   let isHomeBet = false;
 
-                  if (homeEdge >= minEdge && homeEdge >= awayEdge) {
-                    suggestedBet = 'Home';
-                    activeEdge = homeEdge;
-                    activeTeam = bet.home_team;
-                    activePrice = homeMarketProb;
-                    activeOdds = homeOdds;
-                    isHomeBet = true;
-                  } else if (awayEdge >= minEdge && awayEdge >= homeEdge) {
-                    suggestedBet = 'Away';
-                    activeEdge = awayEdge;
-                    activeTeam = bet.away_team;
-                    activePrice = awayMarketProb;
-                    activeOdds = awayOdds;
+                  const trackedBet = getTrackedBet(bet, bettingMode);
+
+                  let homeEdge = 0;
+                  let awayEdge = 0;
+                  let overEdge = 0;
+                  let underEdge = 0;
+
+                  let displayOverProb = bet.over_probability || 50.0;
+                  let displayUnderProb = bet.under_probability || 50.0;
+
+                  if (bettingMode === 'spread') {
+                    const homeModelProb = bet.home_prob / 100;
+                    const awayModelProb = bet.away_prob / 100;
+
+                    let homeOdds = marketSource === 'polymarket'
+                      ? (bet.home_price > 0 ? 1.0 / bet.home_price : 99.0)
+                      : (bet.bookmaker ? bet.bookmaker.home_odds : 1.90);
+                    let awayOdds = marketSource === 'polymarket'
+                      ? (bet.away_price > 0 ? 1.0 / bet.away_price : 99.0)
+                      : (bet.bookmaker ? bet.bookmaker.away_odds : 1.90);
+
+                    if (marketSource === 'bookie' && custom) {
+                      if (custom.home_odds) {
+                        const parsed = parseFloat(custom.home_odds);
+                        if (!isNaN(parsed) && parsed > 0) homeOdds = parsed;
+                      }
+                      if (custom.away_odds) {
+                        const parsed = parseFloat(custom.away_odds);
+                        if (!isNaN(parsed) && parsed > 0) awayOdds = parsed;
+                      }
+                    }
+
+                    let homeMarketProb = 0.5;
+                    let awayMarketProb = 0.5;
+
+                    if (marketSource === 'polymarket') {
+                      homeMarketProb = bet.home_price;
+                      awayMarketProb = bet.away_price;
+                    } else {
+                      const hasCustom = custom && (
+                        (custom.home_odds && !isNaN(parseFloat(custom.home_odds))) ||
+                        (custom.away_odds && !isNaN(parseFloat(custom.away_odds)))
+                      );
+                      if (hasCustom) {
+                        const p_home_raw = 1.0 / homeOdds;
+                        const p_away_raw = 1.0 / awayOdds;
+                        const sum_p = p_home_raw + p_away_raw;
+                        homeMarketProb = sum_p > 0 ? p_home_raw / sum_p : 0.5;
+                        awayMarketProb = sum_p > 0 ? p_away_raw / sum_p : 0.5;
+                      } else {
+                        homeMarketProb = bet.bookmaker ? bet.bookmaker.home_implied_prob / 100 : 0.5;
+                        awayMarketProb = bet.bookmaker ? bet.bookmaker.away_implied_prob / 100 : 0.5;
+                      }
+                    }
+
+                    homeEdge = homeModelProb - homeMarketProb;
+                    awayEdge = awayModelProb - awayMarketProb;
+                    const minEdge = minEdgePct / 100;
+
+                    if (homeEdge >= minEdge && homeEdge >= awayEdge) {
+                      suggestedBet = 'Home';
+                      activeEdge = homeEdge;
+                      activeTeam = bet.home_team;
+                      activePrice = homeMarketProb;
+                      activeOdds = homeOdds;
+                      isHomeBet = true;
+                    } else if (awayEdge >= minEdge && awayEdge >= homeEdge) {
+                      suggestedBet = 'Away';
+                      activeEdge = awayEdge;
+                      activeTeam = bet.away_team;
+                      activePrice = awayMarketProb;
+                      activeOdds = awayOdds;
+                    }
+                  } else {
+                    let overUnderLine = bet.bookmaker ? bet.bookmaker.over_under : 160.0;
+                    if (custom && custom.over_under && !isNaN(parseFloat(custom.over_under))) {
+                      overUnderLine = parseFloat(custom.over_under);
+                    }
+
+                    const overModelProbPct = (custom && custom.over_under)
+                      ? normalCDF(bet.predicted_total || 160.0, overUnderLine, bet.total_dynamic_sigma || 10.0)
+                      : (bet.over_probability || 50.0);
+                    
+                    displayOverProb = Math.round(overModelProbPct * 10) / 10;
+                    displayUnderProb = Math.round((100.0 - overModelProbPct) * 10) / 10;
+
+                    const overModelProb = overModelProbPct / 100;
+                    const underModelProb = 1.0 - overModelProb;
+                    
+                    let overOdds = bet.bookmaker?.over_odds || 1.91;
+                    let underOdds = bet.bookmaker?.under_odds || 1.91;
+                    
+                    if (custom) {
+                      if (custom.over_odds) {
+                        const parsed = parseFloat(custom.over_odds);
+                        if (!isNaN(parsed) && parsed > 0) overOdds = parsed;
+                      }
+                      if (custom.under_odds) {
+                        const parsed = parseFloat(custom.under_odds);
+                        if (!isNaN(parsed) && parsed > 0) underOdds = parsed;
+                      }
+                    }
+                    
+                    const overMarketProb = 1.0 / overOdds;
+                    const underMarketProb = 1.0 / underOdds;
+                    
+                    overEdge = overModelProb - overMarketProb;
+                    underEdge = underModelProb - underMarketProb;
+                    const minEdge = minEdgePct / 100;
+                    
+                    if (overEdge >= minEdge && overEdge >= underEdge) {
+                      suggestedBet = 'OVER';
+                      activeEdge = overEdge;
+                      activeTeam = `Over ${overUnderLine}`;
+                      activePrice = overMarketProb;
+                      activeOdds = overOdds;
+                    } else if (underEdge >= minEdge && underEdge >= overEdge) {
+                      suggestedBet = 'UNDER';
+                      activeEdge = underEdge;
+                      activeTeam = `Under ${overUnderLine}`;
+                      activePrice = underMarketProb;
+                      activeOdds = underOdds;
+                    }
                   }
 
-                  console.log(`Edge Diagnostic [${bet.away_team_abbr}@${bet.home_team_abbr}]: homeEdge=${homeEdge.toFixed(4)}, awayEdge=${awayEdge.toFixed(4)}, minEdge=${minEdge.toFixed(4)}, marketSource=${marketSource}, suggestedBet=${suggestedBet}`);
-
-                  // Suggested wagers
                   let flatBetSize = 0;
                   let kellyBetSize = 0;
                   let kellyPct = 0;
@@ -778,17 +904,13 @@ export default function UpcomingBets() {
                   let kellyLoss = 0;
 
                   if (suggestedBet !== 'No Bet') {
-                    // Flat wager is custom percentage of current bankroll
                     flatBetSize = currentBankroll * (flatWagerPct / 100);
                     flatLoss = flatBetSize;
                     flatWin = flatBetSize * (activeOdds - 1.0);
 
-                    // Kelly sizing: f* = (activeEdge) / (1.0 - activePrice)
                     let kellyFraction = (activeEdge) / (1.0 - activePrice);
                     if (kellyFraction > 0) {
-                      // Apply Kelly multiplier scaled with kellyCap
                       kellyFraction = kellyCap * kellyFraction;
-                      // Apply bankroll cap
                       kellyFraction = Math.min(kellyCap, kellyFraction);
                       
                       kellyPct = kellyFraction * 100;
@@ -817,26 +939,30 @@ export default function UpcomingBets() {
                           )}
                         </td>
                         <td style={{ textAlign: 'center' }}>
-                          <span style={{ color: 'var(--neon-indigo)', fontWeight: '600' }}>{bet.home_prob}%</span>
-                          <span style={{ margin: '0 6px', color: 'var(--color-text-dim)' }}>/</span>
-                          <span style={{ color: 'var(--neon-purple)', fontWeight: '600' }}>{bet.away_prob}%</span>
-                        </td>
-                        <td style={{ textAlign: 'center' }}>
-                          {marketSource === 'polymarket' ? (
+                          {bettingMode === 'spread' ? (
                             <>
-                              <span>${bet.home_price.toFixed(2)}</span>
+                              <span style={{ color: 'var(--neon-indigo)', fontWeight: '600' }}>{bet.home_prob}%</span>
                               <span style={{ margin: '0 6px', color: 'var(--color-text-dim)' }}>/</span>
-                              <span>${bet.away_price.toFixed(2)}</span>
+                              <span style={{ color: 'var(--neon-purple)', fontWeight: '600' }}>{bet.away_prob}%</span>
                             </>
                           ) : (
-                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
-                              {bet.bookmaker?.is_fanduel ? (
-                                <div>
-                                  <span>{bet.bookmaker?.home_odds ? bet.bookmaker.home_odds.toFixed(2) : '—'}</span>
-                                  <span style={{ margin: '0 6px', color: 'var(--color-text-dim)' }}>/</span>
-                                  <span>{bet.bookmaker?.away_odds ? bet.bookmaker.away_odds.toFixed(2) : '—'}</span>
-                                </div>
-                              ) : (
+                            <>
+                              <span style={{ color: 'var(--neon-indigo)', fontWeight: '600' }}>O: {displayOverProb}%</span>
+                              <span style={{ margin: '0 6px', color: 'var(--color-text-dim)' }}>/</span>
+                              <span style={{ color: 'var(--neon-purple)', fontWeight: '600' }}>U: {displayUnderProb}%</span>
+                            </>
+                          )}
+                        </td>
+                        <td style={{ textAlign: 'center' }}>
+                          {bettingMode === 'spread' ? (
+                            marketSource === 'polymarket' ? (
+                              <>
+                                <span>${bet.home_price.toFixed(2)}</span>
+                                <span style={{ margin: '0 6px', color: 'var(--color-text-dim)' }}>/</span>
+                                <span>${bet.away_price.toFixed(2)}</span>
+                              </>
+                            ) : (
+                              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                                   <input
                                     type="number"
@@ -880,38 +1006,153 @@ export default function UpcomingBets() {
                                     }}
                                   />
                                 </div>
-                              )}
+                                {bet.bookmaker?.is_fanduel ? (
+                                  <span style={{
+                                    background: customOdds[gameKey]?.home_odds || customOdds[gameKey]?.away_odds
+                                      ? 'rgba(245, 158, 11, 0.15)'
+                                      : 'rgba(16, 185, 129, 0.15)',
+                                    border: customOdds[gameKey]?.home_odds || customOdds[gameKey]?.away_odds
+                                      ? '1px solid var(--neon-amber)'
+                                      : '1px solid var(--neon-emerald)',
+                                    color: customOdds[gameKey]?.home_odds || customOdds[gameKey]?.away_odds
+                                      ? 'var(--neon-amber)'
+                                      : 'var(--neon-emerald)',
+                                    padding: '2px 6px',
+                                    borderRadius: '4px',
+                                    fontSize: '0.65rem',
+                                    fontWeight: '600',
+                                    display: 'inline-block'
+                                  }}>
+                                    {customOdds[gameKey]?.home_odds || customOdds[gameKey]?.away_odds ? '[FanDuel - Custom]' : '[FanDuel]'}
+                                  </span>
+                                ) : (
+                                  <span style={{
+                                    background: customOdds[gameKey]?.home_odds || customOdds[gameKey]?.away_odds
+                                      ? 'rgba(245, 158, 11, 0.15)'
+                                      : 'rgba(255, 255, 255, 0.05)',
+                                    border: customOdds[gameKey]?.home_odds || customOdds[gameKey]?.away_odds
+                                      ? '1px solid var(--neon-amber)'
+                                      : '1px solid var(--border-card)',
+                                    color: customOdds[gameKey]?.home_odds || customOdds[gameKey]?.away_odds
+                                      ? 'var(--neon-amber)'
+                                      : 'var(--color-text-muted)',
+                                    padding: '2px 6px',
+                                    borderRadius: '4px',
+                                    fontSize: '0.65rem',
+                                    fontWeight: '600',
+                                    display: 'inline-block'
+                                  }}>
+                                    {customOdds[gameKey]?.home_odds || customOdds[gameKey]?.away_odds ? '[ELO - Custom]' : '[ELO]'}
+                                  </span>
+                                )}
+                              </div>
+                            )
+                          ) : (
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
+                              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                  <span style={{ fontSize: '0.8rem', color: 'var(--color-text-dim)' }}>O/U:</span>
+                                  <input
+                                    type="number"
+                                    step="0.5"
+                                    placeholder={bet.bookmaker?.over_under ? bet.bookmaker.over_under.toString() : '160.0'}
+                                    value={customOdds[gameKey]?.over_under || ''}
+                                    onChange={(e) => handleCustomOddsChange(gameKey, 'over_under', e.target.value)}
+                                    style={{
+                                      width: '64px',
+                                      background: 'rgba(255, 255, 255, 0.05)',
+                                      border: '1px solid var(--border-card)',
+                                      color: 'var(--color-text-main)',
+                                      borderRadius: '6px',
+                                      padding: '4px 6px',
+                                      fontSize: '0.8rem',
+                                      textAlign: 'center',
+                                      outline: 'none',
+                                      transition: 'border-color 0.2s'
+                                    }}
+                                  />
+                                </div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    min="1.01"
+                                    placeholder={bet.bookmaker?.over_odds ? bet.bookmaker.over_odds.toFixed(2) : '1.91'}
+                                    value={customOdds[gameKey]?.over_odds || ''}
+                                    onChange={(e) => handleCustomOddsChange(gameKey, 'over_odds', e.target.value)}
+                                    style={{
+                                      width: '54px',
+                                      background: 'rgba(255, 255, 255, 0.05)',
+                                      border: '1px solid var(--border-card)',
+                                      color: 'var(--color-text-main)',
+                                      borderRadius: '6px',
+                                      padding: '4px 6px',
+                                      fontSize: '0.75rem',
+                                      textAlign: 'center',
+                                      outline: 'none'
+                                    }}
+                                  />
+                                  <span style={{ color: 'var(--color-text-dim)' }}>/</span>
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    min="1.01"
+                                    placeholder={bet.bookmaker?.under_odds ? bet.bookmaker.under_odds.toFixed(2) : '1.91'}
+                                    value={customOdds[gameKey]?.under_odds || ''}
+                                    onChange={(e) => handleCustomOddsChange(gameKey, 'under_odds', e.target.value)}
+                                    style={{
+                                      width: '54px',
+                                      background: 'rgba(255, 255, 255, 0.05)',
+                                      border: '1px solid var(--border-card)',
+                                      color: 'var(--color-text-main)',
+                                      borderRadius: '6px',
+                                      padding: '4px 6px',
+                                      fontSize: '0.75rem',
+                                      textAlign: 'center',
+                                      outline: 'none'
+                                    }}
+                                  />
+                                </div>
+                              </div>
                               {bet.bookmaker?.is_fanduel ? (
                                 <span style={{
-                                  background: 'rgba(16, 185, 129, 0.15)',
-                                  border: '1px solid var(--neon-emerald)',
-                                  color: 'var(--neon-emerald)',
+                                  background: customOdds[gameKey]?.over_under || customOdds[gameKey]?.over_odds || customOdds[gameKey]?.under_odds
+                                    ? 'rgba(245, 158, 11, 0.15)'
+                                    : 'rgba(16, 185, 129, 0.15)',
+                                  border: customOdds[gameKey]?.over_under || customOdds[gameKey]?.over_odds || customOdds[gameKey]?.under_odds
+                                    ? '1px solid var(--neon-amber)'
+                                    : '1px solid var(--neon-emerald)',
+                                  color: customOdds[gameKey]?.over_under || customOdds[gameKey]?.over_odds || customOdds[gameKey]?.under_odds
+                                    ? 'var(--neon-amber)'
+                                    : 'var(--neon-emerald)',
                                   padding: '2px 6px',
                                   borderRadius: '4px',
                                   fontSize: '0.65rem',
                                   fontWeight: '600',
-                                  display: 'inline-block'
+                                  display: 'inline-block',
+                                  marginTop: '2px'
                                 }}>
-                                  [FanDuel]
+                                  {customOdds[gameKey]?.over_under || customOdds[gameKey]?.over_odds || customOdds[gameKey]?.under_odds ? '[FanDuel - Custom]' : '[FanDuel]'}
                                 </span>
                               ) : (
                                 <span style={{
-                                  background: customOdds[gameKey]?.home_odds || customOdds[gameKey]?.away_odds
+                                  background: customOdds[gameKey]?.over_under || customOdds[gameKey]?.over_odds || customOdds[gameKey]?.under_odds
                                     ? 'rgba(245, 158, 11, 0.15)'
                                     : 'rgba(255, 255, 255, 0.05)',
-                                  border: customOdds[gameKey]?.home_odds || customOdds[gameKey]?.away_odds
+                                  border: customOdds[gameKey]?.over_under || customOdds[gameKey]?.over_odds || customOdds[gameKey]?.under_odds
                                     ? '1px solid var(--neon-amber)'
                                     : '1px solid var(--border-card)',
-                                  color: customOdds[gameKey]?.home_odds || customOdds[gameKey]?.away_odds
+                                  color: customOdds[gameKey]?.over_under || customOdds[gameKey]?.over_odds || customOdds[gameKey]?.under_odds
                                     ? 'var(--neon-amber)'
                                     : 'var(--color-text-muted)',
                                   padding: '2px 6px',
                                   borderRadius: '4px',
                                   fontSize: '0.65rem',
                                   fontWeight: '600',
-                                  display: 'inline-block'
+                                  display: 'inline-block',
+                                  marginTop: '2px'
                                 }}>
-                                  {customOdds[gameKey]?.home_odds || customOdds[gameKey]?.away_odds ? '[ELO - Custom]' : '[ELO]'}
+                                  {customOdds[gameKey]?.over_under || customOdds[gameKey]?.over_odds || customOdds[gameKey]?.under_odds ? '[ELO - Custom]' : '[ELO]'}
                                 </span>
                               )}
                             </div>
@@ -931,7 +1172,9 @@ export default function UpcomingBets() {
                                 display: 'inline-block',
                                 letterSpacing: '0.05em'
                               }}>
-                                BET {isHomeBet ? bet.home_team_abbr : bet.away_team_abbr}
+                                {bettingMode === 'spread' 
+                                  ? `BET ${isHomeBet ? bet.home_team_abbr : bet.away_team_abbr}`
+                                  : `BET ${activeTeam.toUpperCase()}`}
                               </span>
                               <span style={{ color: 'var(--neon-emerald)', fontSize: '0.75rem', fontWeight: '600' }}>
                                 +{(activeEdge * 100).toFixed(1)}% Edge
@@ -952,7 +1195,9 @@ export default function UpcomingBets() {
                                 NO BET
                               </span>
                               <span style={{ color: 'var(--color-text-muted)', fontSize: '0.7rem' }}>
-                                Max Edge: {Math.max(homeEdge, awayEdge) > 0 ? `+${(Math.max(homeEdge, awayEdge) * 100).toFixed(1)}%` : `${(Math.max(homeEdge, awayEdge) * 100).toFixed(1)}%`}
+                                Max Edge: {bettingMode === 'spread' 
+                                 ? (Math.max(homeEdge, awayEdge) > 0 ? `+${(Math.max(homeEdge, awayEdge) * 100).toFixed(1)}%` : `${(Math.max(homeEdge, awayEdge) * 100).toFixed(1)}%`)
+                                 : (Math.max(overEdge, underEdge) > 0 ? `+${(Math.max(overEdge, underEdge) * 100).toFixed(1)}%` : `${(Math.max(overEdge, underEdge) * 100).toFixed(1)}%`)}
                               </span>
                             </div>
                           )}

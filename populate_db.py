@@ -607,7 +607,7 @@ def main():
         print("Running feature engineering...")
         feature_engineering.main()
         print("Running model training...")
-        train_model.main()
+        train_model.train_model()
         
         
         print("Pipeline sync completed successfully!")
