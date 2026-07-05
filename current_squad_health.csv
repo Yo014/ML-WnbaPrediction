@@ -1,16 +1,16 @@
 Team,Missing_Usage_Pct,Missing_BPM_Pct,Missing_Minutes_Pct,Injured_Players_Count
-Atlanta Dream,0.0,0.0,0.0,0
-Chicago Sky,0.0,0.0,0.0,0
-Connecticut Sun,0.0,0.0,0.0,0
-Dallas Wings,0.0,0.0,0.0,0
-Golden State Valkyries,0.0,0.0,0.0,0
-Indiana Fever,14.1,-2.69,11.5,1
-Las Vegas Aces,0.0,0.0,0.0,0
-Los Angeles Sparks,0.0,0.0,0.0,0
-Minnesota Lynx,0.0,0.0,0.0,0
-New York Liberty,0.0,0.0,0.0,0
-Phoenix Mercury,0.0,0.0,0.0,0
-Portland Fire,0.0,0.0,0.0,0
-Seattle Storm,0.0,0.0,0.0,0
-Toronto Tempo,0.0,0.0,0.0,0
-Washington Mystics,37.3,-5.43,29.25,2
+Atlanta Dream,30.1,-2.4,14.05,2
+Chicago Sky,79.6,-13.19,36.35,4
+Connecticut Sun,29.1,-13.07,13.4,2
+Dallas Wings,36.0,-7.07,8.55,2
+Golden State Valkyries,17.2,-0.66,11.6,1
+Indiana Fever,44.4,0.11,26.9,3
+Las Vegas Aces,50.9,3.12,24.95,3
+Los Angeles Sparks,62.5,-2.39,29.85,3
+Minnesota Lynx,59.5,-1.48,36.9,3
+New York Liberty,43.0,-12.59,14.7,3
+Phoenix Mercury,73.6,1.84,48.35,5
+Portland Fire,12.2,-5.03,7.2,1
+Seattle Storm,25.8,-7.41,2.2,1
+Toronto Tempo,74.8,2.12,43.55,3
+Washington Mystics,21.6,-0.65,17.3,1

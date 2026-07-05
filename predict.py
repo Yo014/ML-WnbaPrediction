@@ -183,7 +183,8 @@ def predict_total_and_over_prob(model, metadata, features_df):
     
     Parameters:
     - model: Dictionary containing keys:
-      'stage1_regressor', 'stage1_classifier', 'stage2_regressor', 'stage2_classifier',
+      'stage1_pace_regressor', 'stage1_home_eff_regressor', 'stage1_away_eff_regressor',
+      'stage1_classifier', 'stage2_regressor', 'stage2_classifier',
       'quantile_10', 'quantile_90', 'stage1_calibrator', 'stage2_calibrator'
     - metadata: Model metadata dictionary containing 'baseline_features', 'full_features', and 'sigma_residuals'
     - features_df: pandas DataFrame containing the exact feature columns required
@@ -216,6 +217,14 @@ def predict_total_and_over_prob(model, metadata, features_df):
         else:
             mean_val = 0.0
         features_df[col] = features_df[col].fillna(mean_val)
+        
+    # Pre-compute s1_total_pred feature for all games using the decoupled Stage 1 models
+    X_base_all = features_df[baseline_feats]
+    pace_pred = model['stage1_pace_regressor'].predict(X_base_all)
+    home_eff_pred = model['stage1_home_eff_regressor'].predict(X_base_all)
+    away_eff_pred = model['stage1_away_eff_regressor'].predict(X_base_all)
+    s1_total_pred = pace_pred * (home_eff_pred + away_eff_pred) / 100.0
+    features_df['s1_total_pred'] = s1_total_pred
         
     # Initialize results arrays
     predicted_total = np.zeros(len(features_df))
@@ -290,7 +299,7 @@ def predict_total_and_over_prob(model, metadata, features_df):
         X_base = df_stage1[baseline_feats]
         
         # Regressor predicts expected total directly
-        mu_pred = model['stage1_regressor'].predict(X_base)
+        mu_pred = df_stage1['s1_total_pred'].values
         sigma_pred = np.full(len(df_stage1), sigma_residuals)
         
         # CDF probability (probability of total score > median_total)

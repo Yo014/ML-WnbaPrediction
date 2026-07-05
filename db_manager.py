@@ -64,7 +64,9 @@ def create_tables(db_path=DB_NAME):
         HomePtsConceded INTEGER,
         AwayPtsScored INTEGER,
         AwayPtsConceded INTEGER,
-        IsFanduelOdds INTEGER DEFAULT 0
+        IsFanduelOdds INTEGER DEFAULT 0,
+        OverOdds REAL,
+        UnderOdds REAL
     );
     """)
     

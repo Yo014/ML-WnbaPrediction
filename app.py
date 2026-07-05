@@ -225,7 +225,7 @@ def init_app_data():
             'Possessions': row['HomePossessions'], 'FGA': row['HomeFGA'], 'FTA': row['HomeFTA'],
             'OREB': row['HomeOREB'], 'TOV': row['HomeTOV'], 'FGM': row['HomeFGM'],
             'FG3M': row['HomeFG3M'], 'FTM': row['HomeFTM'], 'DREB': row['HomeDREB'],
-            'PF': row['HomePF'], 'Opp_DREB': row['AwayDREB']
+            'PF': row['HomePF'], 'MIN': row['HomeMIN'], 'Opp_DREB': row['AwayDREB']
         })
         team_games.append({
             'Date': row['Date'], 'Season': row['Season'],
@@ -234,7 +234,7 @@ def init_app_data():
             'Possessions': row['AwayPossessions'], 'FGA': row['AwayFGA'], 'FTA': row['AwayFTA'],
             'OREB': row['AwayOREB'], 'TOV': row['AwayTOV'], 'FGM': row['AwayFGM'],
             'FG3M': row['AwayFG3M'], 'FTM': row['AwayFTM'], 'DREB': row['AwayDREB'],
-            'PF': row['AwayPF'], 'Opp_DREB': row['HomeDREB']
+            'PF': row['AwayPF'], 'MIN': row['AwayMIN'], 'Opp_DREB': row['HomeDREB']
         })
     df_team_games = pd.DataFrame(team_games)
     if df_team_games.empty:
@@ -251,8 +251,13 @@ def init_app_data():
     df_team_games['ORB%'] = np.where((df_team_games['OREB'] + df_team_games['Opp_DREB']) > 0, df_team_games['OREB'] / (df_team_games['OREB'] + df_team_games['Opp_DREB']), 0.0)
     df_team_games['FT_Rate'] = np.where(df_team_games['FGA'] > 0, df_team_games['FTM'] / df_team_games['FGA'], 0.0)
     
+    # Calculate game-level Pace
+    df_team_games['MIN'] = df_team_games['MIN'].astype(float)
+    game_duration = df_team_games['MIN'] / 5.0
+    df_team_games['Pace'] = np.where(game_duration > 0, 40.0 * df_team_games['Possessions'] / game_duration, df_team_games['Possessions'])
+    
     grouped = df_team_games.groupby(['Team', 'Season'])
-    metrics = ['Offensive_Rating', 'Defensive_Rating', 'eFG%', 'TOV%', 'ORB%', 'FT_Rate']
+    metrics = ['Offensive_Rating', 'Defensive_Rating', 'eFG%', 'TOV%', 'ORB%', 'FT_Rate', 'Pace']
     
     # Store overall means for fallback
     OVERALL_EMA_MEANS = {f'{col}_EMA_{span}': float(df_team_games[col].mean()) for col in metrics for span in [5, 10]}
@@ -781,6 +786,8 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
         'Home_TOV%_EMA_10': get_ema_value(home_emas, 'TOV%_EMA_10'),
         'Home_ORB%_EMA_10': get_ema_value(home_emas, 'ORB%_EMA_10'),
         'Home_FT_Rate_EMA_10': get_ema_value(home_emas, 'FT_Rate_EMA_10'),
+        'Home_Pace_EMA_5': get_ema_value(home_emas, 'Pace_EMA_5'),
+        'Home_Pace_EMA_10': get_ema_value(home_emas, 'Pace_EMA_10'),
         'Away_eFG%_EMA_5': get_ema_value(away_emas, 'eFG%_EMA_5'),
         'Away_TOV%_EMA_5': get_ema_value(away_emas, 'TOV%_EMA_5'),
         'Away_ORB%_EMA_5': get_ema_value(away_emas, 'ORB%_EMA_5'),
@@ -789,6 +796,8 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
         'Away_TOV%_EMA_10': get_ema_value(away_emas, 'TOV%_EMA_10'),
         'Away_ORB%_EMA_10': get_ema_value(away_emas, 'ORB%_EMA_10'),
         'Away_FT_Rate_EMA_10': get_ema_value(away_emas, 'FT_Rate_EMA_10'),
+        'Away_Pace_EMA_5': get_ema_value(away_emas, 'Pace_EMA_5'),
+        'Away_Pace_EMA_10': get_ema_value(away_emas, 'Pace_EMA_10'),
         'Home_Days_Rest': home_days_rest,
         'Home_Back_To_Back': home_b2b,
         'Home_Three_In_Four': home_three_in_four,
@@ -867,6 +876,19 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
             home_win_prob = float(MODEL['stage1_calibrator'].predict([home_win_prob])[0])
             
     # Predict totals and over/under probabilities
+    # Compute s1_total_pred first using baseline features (which are in feature_dict)
+    t_baseline_list = TOTAL_METADATA['baseline_features']
+    t_baseline_df = pd.DataFrame([feature_dict])[t_baseline_list]
+    
+    # Decoupled Stage 1 models predictions
+    s1_pace = float(TOTAL_MODEL['stage1_pace_regressor'].predict(t_baseline_df)[0])
+    s1_home_eff = float(TOTAL_MODEL['stage1_home_eff_regressor'].predict(t_baseline_df)[0])
+    s1_away_eff = float(TOTAL_MODEL['stage1_away_eff_regressor'].predict(t_baseline_df)[0])
+    s1_total_pred = s1_pace * (s1_home_eff + s1_away_eff) / 100.0
+    
+    # Add s1_total_pred to feature_dict so it is included in full_features construction
+    feature_dict['s1_total_pred'] = s1_total_pred
+
     if fd_match:
         t_features_list = TOTAL_METADATA['full_features']
         t_features_df = pd.DataFrame([feature_dict])[t_features_list]
@@ -886,15 +908,12 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
         if 'stage2_calibrator' in TOTAL_MODEL and TOTAL_MODEL['stage2_calibrator'] is not None:
             over_win_prob = float(TOTAL_MODEL['stage2_calibrator'].predict([over_win_prob])[0])
     else:
-        t_features_list = TOTAL_METADATA['baseline_features']
-        t_features_df = pd.DataFrame([feature_dict])[t_features_list]
-        
-        predicted_total = float(TOTAL_MODEL['stage1_regressor'].predict(t_features_df)[0])
+        predicted_total = s1_total_pred
         t_dynamic_sigma = TOTAL_METADATA.get('sigma_residuals', 12.0)
         t_median_total = TOTAL_METADATA.get('median_total', 160.0)
         
         t_p_cdf = float(norm.cdf((predicted_total - t_median_total) / t_dynamic_sigma))
-        t_p_clf = float(TOTAL_MODEL['stage1_classifier'].predict_proba(t_features_df)[0, 1])
+        t_p_clf = float(TOTAL_MODEL['stage1_classifier'].predict_proba(t_baseline_df)[0, 1])
         over_win_prob = 0.5 * t_p_cdf + 0.5 * t_p_clf
         
         if 'stage1_calibrator' in TOTAL_MODEL and TOTAL_MODEL['stage1_calibrator'] is not None:
@@ -1244,31 +1263,41 @@ def delete_bet():
     if not data and request.form:
         data = request.form
         
-    match_date = data.get('match_date') or data.get('date')
-    home_team = data.get('home_team')
-    away_team = data.get('away_team')
-    
-    if not all([match_date, home_team, away_team]):
-        return jsonify({'error': 'Missing required fields'}), 400
-        
-    home_abbr = get_team_abbr(home_team)
-    away_abbr = get_team_abbr(away_team)
-    
-    is_totals = data.get('is_totals', False)
+    bet_id = data.get('id')
     
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     try:
-        if is_totals:
-            cursor.execute("""
-                DELETE FROM confirmed_bets
-                WHERE match_date = ? AND home_team = ? AND away_team = ? AND recommended_side IN ('OVER', 'UNDER')
-            """, (match_date, home_abbr, away_abbr))
+        if bet_id is not None:
+            # Fetch details before deleting
+            cursor.execute("SELECT match_date, home_team, away_team FROM confirmed_bets WHERE id = ?", (bet_id,))
+            row = cursor.fetchone()
+            if not row:
+                return jsonify({'error': 'Bet not found'}), 404
+            match_date, home_abbr, away_abbr = row
+            cursor.execute("DELETE FROM confirmed_bets WHERE id = ?", (bet_id,))
         else:
-            cursor.execute("""
-                DELETE FROM confirmed_bets
-                WHERE match_date = ? AND home_team = ? AND away_team = ? AND recommended_side NOT IN ('OVER', 'UNDER')
-            """, (match_date, home_abbr, away_abbr))
+            match_date = data.get('match_date') or data.get('date')
+            home_team = data.get('home_team')
+            away_team = data.get('away_team')
+            
+            if not all([match_date, home_team, away_team]):
+                return jsonify({'error': 'Missing required fields'}), 400
+                
+            home_abbr = get_team_abbr(home_team)
+            away_abbr = get_team_abbr(away_team)
+            is_totals = data.get('is_totals', False)
+            
+            if is_totals:
+                cursor.execute("""
+                    DELETE FROM confirmed_bets
+                    WHERE match_date = ? AND home_team = ? AND away_team = ? AND recommended_side IN ('OVER', 'UNDER')
+                """, (match_date, home_abbr, away_abbr))
+            else:
+                cursor.execute("""
+                    DELETE FROM confirmed_bets
+                    WHERE match_date = ? AND home_team = ? AND away_team = ? AND recommended_side NOT IN ('OVER', 'UNDER')
+                """, (match_date, home_abbr, away_abbr))
             
         # Check if there are any remaining confirmed bets for this game before cleaning up raw_matches
         cursor.execute("""
@@ -1291,6 +1320,76 @@ def delete_bet():
         
         conn.commit()
         return jsonify({'message': 'Bet deleted successfully'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/edit_bet', methods=['POST'])
+def edit_bet():
+    data = request.get_json() or {}
+    if not data and request.form:
+        data = request.form
+        
+    bet_id = data.get('id')
+    recommended_side = data.get('recommended_side')
+    wager_amount = data.get('wager_amount')
+    odds = data.get('odds')
+    outcome = data.get('outcome') # 'won', 'lost', 'push', or None
+    manual_pnl = data.get('bankroll_change')
+    
+    if not bet_id:
+        return jsonify({'error': 'Missing bet id'}), 400
+        
+    try:
+        wager_amount = float(wager_amount) if wager_amount is not None else None
+        odds = float(odds) if odds is not None else None
+        if manual_pnl is not None:
+            manual_pnl = float(manual_pnl)
+    except ValueError:
+        return jsonify({'error': 'wager_amount, odds, and bankroll_change must be numeric'}), 400
+        
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    try:
+        # Fetch current bet details
+        cursor.execute("SELECT recommended_side, wager_amount, odds, outcome FROM confirmed_bets WHERE id = ?", (bet_id,))
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({'error': 'Bet not found'}), 404
+            
+        new_side = recommended_side if recommended_side is not None else row[0]
+        new_wager = wager_amount if wager_amount is not None else row[1]
+        new_odds = odds if odds is not None else row[2]
+        
+        if outcome == "" or outcome is None:
+            new_outcome = None
+        else:
+            new_outcome = outcome.strip().lower()
+            if new_outcome not in ('won', 'lost', 'push'):
+                return jsonify({'error': 'Invalid outcome value'}), 400
+                
+        # Calculate bankroll change based on outcome (if not manually overridden)
+        if manual_pnl is not None:
+            bankroll_change = manual_pnl
+        else:
+            if new_outcome == 'won':
+                bankroll_change = new_wager * (new_odds - 1.0)
+            elif new_outcome == 'lost':
+                bankroll_change = -new_wager
+            elif new_outcome == 'push':
+                bankroll_change = 0.0
+            else:
+                bankroll_change = -new_wager
+            
+        cursor.execute("""
+            UPDATE confirmed_bets
+            SET recommended_side = ?, wager_amount = ?, odds = ?, outcome = ?, bankroll_change = ?
+            WHERE id = ?
+        """, (new_side, new_wager, new_odds, new_outcome, bankroll_change, bet_id))
+        
+        conn.commit()
+        return jsonify({'message': 'Bet updated successfully'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
     finally:
@@ -1501,13 +1600,16 @@ def get_upcoming_bets():
             
             # Query custom overrides from raw_matches
             cursor.execute("""
-                SELECT BookieHomeOdds, BookieAwayOdds, OverUnder, IsFanduelOdds FROM raw_matches
+                SELECT BookieHomeOdds, BookieAwayOdds, OverUnder, IsFanduelOdds, OverOdds, UnderOdds FROM raw_matches
                 WHERE Date = ? AND (
                     (HomeTeam = ? AND AwayTeam = ?) OR
                     (HomeTeam = ? AND AwayTeam = ?)
                 )
             """, (match_date, home_team_full, away_team_full, away_team_full, home_team_full))
             db_row = cursor.fetchone()
+            
+            db_over_odds = db_row[4] if db_row else None
+            db_under_odds = db_row[5] if db_row else None
             
             custom_home_odds = None
             custom_away_odds = None
@@ -1565,8 +1667,8 @@ def get_upcoming_bets():
                     'away_implied_prob': round((1.0 - bm_odds['Prob_Home']) * 100, 1),
                     'closing_spread': bm_odds['ClosingSpread'],
                     'over_under': bm_odds['OverUnder'],
-                    'over_odds': 1.91,
-                    'under_odds': 1.91,
+                    'over_odds': db_over_odds if db_over_odds is not None else 1.91,
+                    'under_odds': db_under_odds if db_under_odds is not None else 1.91,
                     'custom_home_odds': custom_home_odds,
                     'custom_away_odds': custom_away_odds,
                     'custom_over_odds': custom_over_odds,

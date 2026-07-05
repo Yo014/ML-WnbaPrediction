@@ -165,6 +165,7 @@ def main():
             'FTM': row['HomeFTM'],
             'DREB': row['HomeDREB'],
             'PF': row['HomePF'],
+            'MIN': row['HomeMIN'],
             'Opp_DREB': row['AwayDREB']
         })
         # Away team record
@@ -187,6 +188,7 @@ def main():
             'FTM': row['AwayFTM'],
             'DREB': row['AwayDREB'],
             'PF': row['AwayPF'],
+            'MIN': row['AwayMIN'],
             'Opp_DREB': row['HomeDREB']
         })
     df_team_games = pd.DataFrame(team_games)
@@ -203,9 +205,32 @@ def main():
     df_team_games['ORB%'] = np.where((df_team_games['OREB'] + df_team_games['Opp_DREB']) > 0, df_team_games['OREB'] / (df_team_games['OREB'] + df_team_games['Opp_DREB']), 0.0)
     df_team_games['FT_Rate'] = np.where(df_team_games['FGA'] > 0, df_team_games['FTM'] / df_team_games['FGA'], 0.0)
     
+    # Calculate game-level Pace
+    game_duration = df_team_games['MIN'] / 5.0
+    df_team_games['Pace'] = np.where(game_duration > 0, 40.0 * df_team_games['Possessions'] / game_duration, df_team_games['Possessions'])
+    
     # Group by Team and Season to compute EMAs with start-of-season carry-over
     print("Computing EMAs (span=5 and span=10) with start-of-season carry-over...")
-    metrics = ['Offensive_Rating', 'Defensive_Rating', 'eFG%', 'TOV%', 'ORB%', 'FT_Rate']
+    metrics = ['Offensive_Rating', 'Defensive_Rating', 'eFG%', 'TOV%', 'ORB%', 'FT_Rate', 'Pace']
+    
+    # Precompute Talent Floors and changes for early-season stats Bayesian prior blending
+    df_tf = calculate_talent_floors(conn)
+    tf_dict = {(row['Team'], row['Season']): row['Talent_Floor'] for _, row in df_tf.iterrows()}
+    tf_change_dict = {}
+    for _, row in df_tf.iterrows():
+        team = row['Team']
+        season = row['Season']
+        tf_curr = row['Talent_Floor']
+        tf_prev = tf_dict.get((team, season - 1))
+        if tf_prev is None:
+            tf_change = 0.0
+        else:
+            tf_change = tf_curr - tf_prev
+        tf_change_dict[(team, season)] = tf_change
+
+    # Precompute game number in season from df_team_games
+    df_team_games['Game_Number_In_Season'] = df_team_games.groupby(['Team', 'Season']).cumcount() + 1
+    gn_map = df_team_games.set_index(['Team', 'Season', 'Date'])['Game_Number_In_Season'].to_dict()
     
     # Precompute chronological global means for all metrics to use as starting EMA fallback for 2018 / new teams
     chrono_means_unique = get_chronological_global_means(df_team_games, 'Date', metrics)
@@ -244,6 +269,25 @@ def main():
                         # 2018: use chronological mean prior to team's first game of the season
                         EMA_start = chrono_team_means.loc[team_season_df.index[0], col]
                         
+                    # Determine prior value based on column and Talent_Floor_Change
+                    tf_change = tf_change_dict.get((T, S), 0.0)
+                    if col == 'Offensive_Rating':
+                        Prior = EMA_start + 0.15 * tf_change
+                    elif col == 'Defensive_Rating':
+                        Prior = EMA_start - 0.15 * tf_change
+                    elif col == 'eFG%':
+                        Prior = EMA_start + 0.0005 * tf_change
+                    elif col == 'TOV%':
+                        Prior = EMA_start - 0.0002 * tf_change
+                    elif col == 'ORB%':
+                        Prior = EMA_start + 0.0005 * tf_change
+                    elif col == 'FT_Rate':
+                        Prior = EMA_start + 0.0005 * tf_change
+                    elif col == 'Pace':
+                        Prior = EMA_start
+                    else:
+                        Prior = EMA_start
+
                     # Prepend EMA_start to the season's feature series before running ewm
                     prepended_vals = np.insert(vals, 0, EMA_start)
                     s_prepended = pd.Series(prepended_vals)
@@ -253,10 +297,20 @@ def main():
                     ewm_shifted = ewm_series.shift(1)
                     ewm_final = ewm_shifted.iloc[1:].values
                     
-                    df_team_games.loc[team_season_mask, f'{col}_EMA_{span}'] = ewm_final
+                    # Calculate Bayesian credibility weight
+                    n_vals = team_season_df['Game_Number_In_Season'].values
+                    W = np.where(n_vals <= 8, n_vals / (n_vals + 4.0), 1.0)
                     
-                    # Store final EMA for the next season carry over
-                    prev_season_final_ema[(span, col, T)] = ewm_series.iloc[-1]
+                    # Blend the computed ewm_final with the prior
+                    ewm_final_blended = (1.0 - W) * Prior + W * ewm_final
+                    
+                    df_team_games.loc[team_season_mask, f'{col}_EMA_{span}'] = ewm_final_blended
+                    
+                    # Store final EMA for the next season carry over (applying blending)
+                    N = len(vals)
+                    W_final = N / (N + 4.0) if N <= 8 else 1.0
+                    carry_over_blended = (1.0 - W_final) * Prior + W_final * ewm_series.iloc[-1]
+                    prev_season_final_ema[(span, col, T)] = carry_over_blended
             
     # Compute Rest & Fatigue
     print("Computing rest & fatigue features...")
@@ -332,10 +386,7 @@ def main():
             
         return (0.0, 0.0, 0.0)
 
-    # Precompute game number in season from df_team_games to identify start of season (first 5 games)
-    df_team_games['Game_Number_In_Season'] = df_team_games.groupby(['Team', 'Season']).cumcount() + 1
-    gn_map = df_team_games.set_index(['Team', 'Season', 'Date'])['Game_Number_In_Season'].to_dict()
-    
+
     # Initialize health columns
     health_metrics = ['Missing_Usage_Pct', 'Missing_BPM_Pct', 'Missing_Minutes_Pct', 'Injured_Players_Count']
     for col in health_metrics:
@@ -396,8 +447,7 @@ def main():
         df_matches.loc[idx, 'Away_Injured_Players_Count'] = len(a_inactives)
             
     # 3. Talent Floor
-    print("Calculating and merging Talent Floor from player win shares...")
-    df_tf = calculate_talent_floors(conn)
+    print("Merging Talent Floor from player win shares...")
     df_matches = pd.merge(df_matches, df_tf.rename(columns={'Talent_Floor': 'Home_Talent_Floor'}), left_on=['HomeTeam', 'Season'], right_on=['Team', 'Season'], how='left').drop(columns=['Team'])
     df_matches = pd.merge(df_matches, df_tf.rename(columns={'Talent_Floor': 'Away_Talent_Floor'}), left_on=['AwayTeam', 'Season'], right_on=['Team', 'Season'], how='left').drop(columns=['Team'])
     df_matches['Home_Talent_Floor'] = df_matches['Home_Talent_Floor'].fillna(0.0)

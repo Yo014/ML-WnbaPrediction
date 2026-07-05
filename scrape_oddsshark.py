@@ -98,9 +98,17 @@ def main():
         print("Adding IsFanduelOdds column to raw_matches table...")
         cursor.execute("ALTER TABLE raw_matches ADD COLUMN IsFanduelOdds INTEGER DEFAULT 0;")
         conn.commit()
+    if "OverOdds" not in columns:
+        print("Adding OverOdds column to raw_matches table...")
+        cursor.execute("ALTER TABLE raw_matches ADD COLUMN OverOdds REAL;")
+        conn.commit()
+    if "UnderOdds" not in columns:
+        print("Adding UnderOdds column to raw_matches table...")
+        cursor.execute("ALTER TABLE raw_matches ADD COLUMN UnderOdds REAL;")
+        conn.commit()
         
     # Query distinct dates where we haven't scraped/saved real odds yet (IsFanduelOdds = 0)
-    cursor.execute("SELECT DISTINCT Date FROM raw_matches WHERE IsFanduelOdds = 0 ORDER BY Date;")
+    cursor.execute("SELECT DISTINCT Date FROM raw_matches WHERE IsFanduelOdds = 0 OR OverOdds IS NULL OR UnderOdds IS NULL ORDER BY Date;")
     dates = [r[0] for r in cursor.fetchall()]
     
     total_dates = len(dates)
@@ -141,13 +149,18 @@ def main():
                 away_ml = parse_american_odds(g.get('away_money_line'))
                 home_spread = parse_spread(g.get('home_spread'))
                 total = parse_total(g.get('total'))
+                over_price = parse_american_odds(g.get('over_price'))
+                under_price = parse_american_odds(g.get('under_price'))
                 
                 # Convert money line to decimal odds
                 home_odds = american_to_decimal(home_ml) if home_ml is not None else None
                 away_odds = american_to_decimal(away_ml) if away_ml is not None else None
+                over_odds = american_to_decimal(over_price) if over_price is not None else None
+                under_odds = american_to_decimal(under_price) if under_price is not None else None
                 
                 # Only update if we parsed some valid betting data
-                if home_odds is None and away_odds is None and home_spread is None and total is None:
+                if (home_odds is None and away_odds is None and home_spread is None and 
+                    total is None and over_odds is None and under_odds is None):
                     continue
                 
                 # Update DB row
@@ -158,9 +171,11 @@ def main():
                         OpeningSpread = COALESCE(?, OpeningSpread),
                         ClosingSpread = COALESCE(?, ClosingSpread),
                         OverUnder = COALESCE(?, OverUnder),
+                        OverOdds = COALESCE(?, OverOdds),
+                        UnderOdds = COALESCE(?, UnderOdds),
                         IsFanduelOdds = 2
                     WHERE Date = ? AND HomeTeam = ? AND AwayTeam = ?
-                """, (home_odds, away_odds, home_spread, home_spread, total, date, home_name, away_name))
+                """, (home_odds, away_odds, home_spread, home_spread, total, over_odds, under_odds, date, home_name, away_name))
                 
                 if cursor.rowcount > 0:
                     daily_updates += 1

@@ -597,6 +597,8 @@ def main():
         from data_processing import standardize_and_calculate_metrics
         import feature_engineering
         import train_model
+        import train_totals_model
+        
         
         print("Calculating squad health...")
         build_squad_health()
@@ -608,6 +610,8 @@ def main():
         feature_engineering.main()
         print("Running model training...")
         train_model.train_model()
+        print("Running totals model training...")
+        train_totals_model.train_totals_model()
         
         
         print("Pipeline sync completed successfully!")

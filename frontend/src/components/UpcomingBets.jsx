@@ -252,6 +252,10 @@ export default function UpcomingBets() {
     const saved = localStorage.getItem('wnba_initial_bankroll');
     return saved !== null ? Math.max(0, parseFloat(saved)) : 100;
   });
+  const [bankrollAdjustment, setBankrollAdjustment] = useState(() => {
+    const saved = localStorage.getItem('wnba_bankroll_adjustment');
+    return saved !== null ? parseFloat(saved) || 0 : 0;
+  });
   const [minEdgePct, setMinEdgePct] = useState(7.0); // entered as percentage, e.g. 7.0%
   const [flatWagerPct, setFlatWagerPct] = useState(12.0); // entered as percentage, e.g. 12.0%
   const [kellyCap, setKellyCap] = useState(0.10); // bankroll cap fraction, defaulting to 1/10
@@ -293,6 +297,12 @@ export default function UpcomingBets() {
   const [error, setError] = useState(null);
   const [expandedGames, setExpandedGames] = useState({}); // { [gameIndex]: boolean }
   const [confirmedBets, setConfirmedBets] = useState([]);
+  const [editingBetId, setEditingBetId] = useState(null);
+  const [editSide, setEditSide] = useState('');
+  const [editWager, setEditWager] = useState('');
+  const [editOdds, setEditOdds] = useState('');
+  const [editOutcome, setEditOutcome] = useState('');
+  const [editBankrollChange, setEditBankrollChange] = useState('');
 
   const fetchConfirmedBets = async () => {
     try {
@@ -376,6 +386,66 @@ export default function UpcomingBets() {
     }
   };
 
+  const handleDeleteConfirmedBet = async (betId) => {
+    setError(null);
+    try {
+      const res = await fetch('/api/delete_bet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: betId })
+      });
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.error || `Status ${res.status}`);
+      }
+      await fetchConfirmedBets();
+      await fetchUpcomingBets();
+    } catch (err) {
+      setError(`Failed to delete bet: ${err.message}`);
+    }
+  };
+
+  const updatePnLPreview = (wagerStr, oddsStr, outcomeStr) => {
+    const wagerVal = parseFloat(wagerStr) || 0;
+    const oddsVal = parseFloat(oddsStr) || 0;
+    if (outcomeStr === 'WON') {
+      setEditBankrollChange((wagerVal * (oddsVal - 1.0)).toFixed(2));
+    } else if (outcomeStr === 'LOST') {
+      setEditBankrollChange((-wagerVal).toFixed(2));
+    } else if (outcomeStr === 'PUSH') {
+      setEditBankrollChange('0.00');
+    } else {
+      setEditBankrollChange((-wagerVal).toFixed(2));
+    }
+  };
+
+  const handleSaveEditBet = async (betId) => {
+    setError(null);
+    try {
+      const res = await fetch('/api/edit_bet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: betId,
+          recommended_side: editSide,
+          wager_amount: parseFloat(editWager),
+          odds: parseFloat(editOdds),
+          outcome: editOutcome === 'PENDING' ? null : editOutcome.toLowerCase(),
+          bankroll_change: parseFloat(editBankrollChange)
+        })
+      });
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.error || `Status ${res.status}`);
+      }
+      setEditingBetId(null);
+      await fetchConfirmedBets();
+      await fetchUpcomingBets();
+    } catch (err) {
+      setError(`Failed to save bet: ${err.message}`);
+    }
+  };
+
   const getDbAbbr = (name) => {
     if (!name) return '';
     const n = name.trim().toUpperCase();
@@ -416,6 +486,10 @@ export default function UpcomingBets() {
   useEffect(() => {
     localStorage.setItem('wnba_initial_bankroll', initialBankroll);
   }, [initialBankroll]);
+
+  useEffect(() => {
+    localStorage.setItem('wnba_bankroll_adjustment', bankrollAdjustment);
+  }, [bankrollAdjustment]);
 
   const fetchUpcomingBets = async () => {
     setLoading(true);
@@ -494,7 +568,7 @@ export default function UpcomingBets() {
 
   const settledPnL = confirmedBets
     .filter(bet => bet.outcome !== null)
-    .reduce((sum, bet) => sum + (bet.bankroll_change || 0), 0);
+    .reduce((sum, bet) => sum + (bet.bankroll_change || 0), 0) + bankrollAdjustment;
 
   const currentBankroll = initialBankroll + settledPnL - pendingWagers;
 
@@ -519,15 +593,16 @@ export default function UpcomingBets() {
 
     settled.forEach(bet => {
       runningBankroll += (bet.bankroll_change || 0);
+      const adjustedBankroll = runningBankroll + bankrollAdjustment;
       history.push({
         date: bet.match_date,
-        bankroll: runningBankroll,
-        cumulative_profit: runningBankroll - initialBankroll
+        bankroll: adjustedBankroll,
+        cumulative_profit: adjustedBankroll - initialBankroll
       });
     });
 
     return history;
-  }, [confirmedBets, initialBankroll]);
+  }, [confirmedBets, initialBankroll, bankrollAdjustment]);
 
   return (
     <div className="sim-dashboard-grid">
@@ -540,6 +615,7 @@ export default function UpcomingBets() {
           </span>
           <span className="metric-card-sub">
             Starting: ${initialBankroll.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            {bankrollAdjustment !== 0 && ` (Adj: ${bankrollAdjustment >= 0 ? '+' : ''}${bankrollAdjustment.toFixed(2)})`}
           </span>
         </div>
 
@@ -550,6 +626,7 @@ export default function UpcomingBets() {
           </span>
           <span className="metric-card-sub">
             Growth: {initialBankroll > 0 ? ((settledPnL / initialBankroll) * 100).toFixed(1) : '0.0'}%
+            {bankrollAdjustment !== 0 && ` (Adj: ${bankrollAdjustment >= 0 ? '+' : ''}${bankrollAdjustment.toFixed(2)})`}
           </span>
         </div>
 
@@ -607,6 +684,21 @@ export default function UpcomingBets() {
               onChange={(e) => setInitialBankroll(Math.max(0, parseFloat(e.target.value) || 0))}
               disabled={loading || scraping}
               style={{ width: '100%' }}
+            />
+          </div>
+
+          <div className="control-group">
+            <label className="control-label" htmlFor="adjustment-input">Bankroll Adjustment ($)</label>
+            <input
+              id="adjustment-input"
+              type="number"
+              step="0.01"
+              className="select-input"
+              value={bankrollAdjustment}
+              onChange={(e) => setBankrollAdjustment(parseFloat(e.target.value) || 0)}
+              disabled={loading || scraping}
+              style={{ width: '100%' }}
+              placeholder="e.g. -2.30"
             />
           </div>
 
@@ -1493,6 +1585,262 @@ export default function UpcomingBets() {
                         </tr>
                       )}
                     </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Tracked Bets History Card */}
+      <div className="glass-card" style={{ marginTop: '24px' }}>
+        <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>Tracked Bets History</span>
+          <span className="badge" style={{ background: 'rgba(99, 102, 241, 0.15)', borderColor: 'var(--neon-indigo)', color: 'var(--neon-indigo)' }}>
+            {confirmedBets.length} Tracked Bets
+          </span>
+        </div>
+
+        {confirmedBets.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '30px', color: 'var(--color-text-muted)', fontSize: '0.9rem' }}>
+            No tracked bets recorded yet. Confirm a bet from the Edge Finder above to start tracking.
+          </div>
+        ) : (
+          <div className="table-container">
+            <table className="custom-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Matchup</th>
+                  <th>Bet Target</th>
+                  <th>Type</th>
+                  <th style={{ textAlign: 'right' }}>Wager</th>
+                  <th style={{ textAlign: 'right' }}>Odds</th>
+                  <th style={{ textAlign: 'center' }}>Outcome</th>
+                  <th style={{ textAlign: 'right' }}>PnL</th>
+                  <th style={{ textAlign: 'center', width: '160px' }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {confirmedBets.map((bet) => {
+                  const isEditing = editingBetId === bet.id;
+                  
+                  // Calculate potential change for preview in editing
+                  let previewPnL = 0;
+                  if (isEditing) {
+                    const tempWager = parseFloat(editWager) || 0;
+                    const tempOdds = parseFloat(editOdds) || 0;
+                    if (editOutcome === 'WON') {
+                      previewPnL = tempWager * (tempOdds - 1.0);
+                    } else if (editOutcome === 'LOST') {
+                      previewPnL = -tempWager;
+                    }
+                  }
+
+                  const isTotalBet = bet.recommended_side.trim().toUpperCase() === 'OVER' || bet.recommended_side.trim().toUpperCase() === 'UNDER';
+                  
+                  return (
+                    <tr key={bet.id}>
+                      <td>{bet.match_date}</td>
+                      <td style={{ fontWeight: '600' }}>
+                        {bet.home_team} vs {bet.away_team}
+                      </td>
+                      <td>
+                        {isEditing ? (
+                          <select
+                            value={editSide}
+                            onChange={(e) => setEditSide(e.target.value)}
+                            className="select-input"
+                            style={{ padding: '4px', fontSize: '0.8rem', background: 'var(--bg-card)', color: '#fff', border: '1px solid var(--border-card)', borderRadius: '4px' }}
+                          >
+                            <option value="OVER">OVER</option>
+                            <option value="UNDER">UNDER</option>
+                            <option value={bet.home_team}>{bet.home_team}</option>
+                            <option value={bet.away_team}>{bet.away_team}</option>
+                          </select>
+                        ) : (
+                          <span style={{
+                            fontWeight: '700',
+                            color: isTotalBet ? 'var(--neon-purple)' : 'var(--neon-indigo)'
+                          }}>
+                            {bet.recommended_side}
+                          </span>
+                        )}
+                      </td>
+                      <td>{bet.wager_type}</td>
+                      <td style={{ textAlign: 'right', fontWeight: '700' }}>
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={editWager}
+                            onChange={(e) => setEditWager(e.target.value)}
+                            style={{ width: '70px', padding: '4px', textAlign: 'right', background: 'var(--bg-card)', color: '#fff', border: '1px solid var(--border-card)', borderRadius: '4px' }}
+                          />
+                        ) : (
+                          `$${bet.wager_amount.toFixed(2)}`
+                        )}
+                      </td>
+                      <td style={{ textAlign: 'right' }}>
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={editOdds}
+                            onChange={(e) => setEditOdds(e.target.value)}
+                            style={{ width: '60px', padding: '4px', textAlign: 'right', background: 'var(--bg-card)', color: '#fff', border: '1px solid var(--border-card)', borderRadius: '4px' }}
+                          />
+                        ) : (
+                          bet.odds.toFixed(2)
+                        )}
+                      </td>
+                      <td style={{ textAlign: 'center' }}>
+                        {isEditing ? (
+                          <select
+                            value={editOutcome}
+                            onChange={(e) => setEditOutcome(e.target.value)}
+                            className="select-input"
+                            style={{ padding: '4px', fontSize: '0.8rem', background: 'var(--bg-card)', color: '#fff', border: '1px solid var(--border-card)', borderRadius: '4px' }}
+                          >
+                            <option value="PENDING">PENDING</option>
+                            <option value="WON">WON</option>
+                            <option value="LOST">LOST</option>
+                            <option value="PUSH">PUSH</option>
+                          </select>
+                        ) : (
+                          <span className="badge" style={{
+                            background: bet.outcome === null
+                              ? 'rgba(245, 158, 11, 0.15)'
+                              : bet.outcome?.toLowerCase() === 'won'
+                                ? 'rgba(16, 185, 129, 0.15)'
+                                : bet.outcome?.toLowerCase() === 'push'
+                                  ? 'rgba(255, 255, 255, 0.1)'
+                                  : 'rgba(244, 63, 94, 0.15)',
+                            borderColor: bet.outcome === null
+                              ? 'var(--neon-amber)'
+                              : bet.outcome?.toLowerCase() === 'won'
+                                ? 'var(--neon-emerald)'
+                                : bet.outcome?.toLowerCase() === 'push'
+                                  ? 'var(--color-text-dim)'
+                                  : 'var(--neon-rose)',
+                            color: bet.outcome === null
+                              ? 'var(--neon-amber)'
+                              : bet.outcome?.toLowerCase() === 'won'
+                                ? 'var(--neon-emerald)'
+                                : bet.outcome?.toLowerCase() === 'push'
+                                  ? 'var(--color-text-dim)'
+                                  : 'var(--neon-rose)',
+                            fontSize: '0.7rem',
+                            padding: '2px 6px'
+                          }}>
+                            {(bet.outcome || 'PENDING').toUpperCase()}
+                          </span>
+                        )}
+                      </td>
+                      <td style={{ textAlign: 'right', fontWeight: '700' }}>
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={editBankrollChange}
+                            onChange={(e) => setEditBankrollChange(e.target.value)}
+                            style={{ width: '80px', padding: '4px', textAlign: 'right', background: 'var(--bg-card)', color: '#fff', border: '1px solid var(--border-card)', borderRadius: '4px' }}
+                          />
+                        ) : (
+                          bet.outcome === null ? (
+                            <span style={{ color: 'var(--color-text-dim)' }}>—</span>
+                          ) : (
+                            <span style={{
+                              color: bet.bankroll_change >= 0 ? 'var(--neon-emerald)' : 'var(--neon-rose)'
+                            }}>
+                              {bet.bankroll_change >= 0 ? '+' : ''}${bet.bankroll_change.toFixed(2)}
+                            </span>
+                          )
+                        )}
+                      </td>
+                      <td style={{ textAlign: 'center' }}>
+                        {isEditing ? (
+                          <div style={{ display: 'flex', gap: '6px', justifyContent: 'center' }}>
+                            <button
+                              onClick={() => handleSaveEditBet(bet.id)}
+                              className="select-input"
+                              style={{
+                                padding: '2px 8px',
+                                fontSize: '0.7rem',
+                                cursor: 'pointer',
+                                background: 'rgba(16, 185, 129, 0.15)',
+                                border: '1px solid var(--neon-emerald)',
+                                borderRadius: '6px',
+                                color: 'var(--neon-emerald)',
+                                fontWeight: '600'
+                              }}
+                            >
+                              Save
+                            </button>
+                            <button
+                              onClick={() => setEditingBetId(null)}
+                              className="select-input"
+                              style={{
+                                padding: '2px 8px',
+                                fontSize: '0.7rem',
+                                cursor: 'pointer',
+                                background: 'rgba(255, 255, 255, 0.05)',
+                                border: '1px solid var(--border-card)',
+                                borderRadius: '6px',
+                                color: 'var(--color-text-muted)'
+                              }}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', gap: '6px', justifyContent: 'center' }}>
+                            <button
+                              onClick={() => {
+                                setEditingBetId(bet.id);
+                                setEditSide(bet.recommended_side);
+                                setEditWager(bet.wager_amount.toString());
+                                setEditOdds(bet.odds.toString());
+                                setEditOutcome(bet.outcome ? bet.outcome.toUpperCase() : 'PENDING');
+                                setEditBankrollChange(bet.bankroll_change.toString());
+                              }}
+                              className="select-input"
+                              style={{
+                                padding: '2px 8px',
+                                fontSize: '0.7rem',
+                                cursor: 'pointer',
+                                background: 'rgba(99, 102, 241, 0.15)',
+                                border: '1px solid var(--neon-indigo)',
+                                borderRadius: '6px',
+                                color: 'var(--neon-indigo)'
+                              }}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (window.confirm("Are you sure you want to delete/reset this confirmed bet? This will remove it from your bankroll history.")) {
+                                  handleDeleteConfirmedBet(bet.id);
+                                }
+                              }}
+                              className="select-input"
+                              style={{
+                                padding: '2px 8px',
+                                fontSize: '0.7rem',
+                                cursor: 'pointer',
+                                background: 'rgba(244, 63, 94, 0.15)',
+                                border: '1px solid var(--neon-rose)',
+                                borderRadius: '6px',
+                                color: 'var(--neon-rose)'
+                              }}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
                   );
                 })}
               </tbody>
