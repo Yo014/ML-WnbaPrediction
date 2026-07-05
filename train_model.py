@@ -119,13 +119,13 @@ def train_model():
         raise ValueError(f"Missing features in dataset: {missing_features}")
         
     # 3. Prepare data for tuning/training (chronological split)
-    # Train/validation before 2026-06-01, test after 2026-06-01
-    train_val_mask = df['Date'] < '2026-06-01'
+    # Train/validation before 2026-07-01, test after 2026-07-01
+    train_val_mask = df['Date'] < '2026-07-01'
     train_val_df = df[train_val_mask].copy().reset_index(drop=True)
     test_df = df[~train_val_mask].copy().reset_index(drop=True)
     
     if test_df.empty:
-        raise ValueError("Held-out test set (Date >= 2026-06-01) is empty.")
+        raise ValueError("Held-out test set (Date >= 2026-07-01) is empty.")
         
     # Fill NaNs using the mean of the training-validation set to prevent look-ahead bias and handle scikit-learn estimators
     feature_means = {}
@@ -138,8 +138,8 @@ def train_model():
         test_df[col] = test_df[col].fillna(mean_val)
         df[col] = df[col].fillna(mean_val)
         
-    print(f"Tuning dataset size (Date < 2026-06-01): {len(train_val_df)} matches")
-    print(f"June 2026 test set size (Date >= 2026-06-01): {len(test_df)} matches")
+    print(f"Tuning dataset size (Date < 2026-07-01): {len(train_val_df)} matches")
+    print(f"July 2026 test set size (Date >= 2026-07-01): {len(test_df)} matches")
     
     # Generate custom splits
     cv_splitter = WalkForwardSeasonSplitter(train_val_df['Season'])
@@ -277,7 +277,7 @@ def train_model():
     stage2_calibrator.fit(best_oof_s2, best_oof_y)
     
     # 7. Train final models on train_val_df using the optimal lambda
-    print(f"\nTraining final models on entire tuning dataset (Date < 2026-06-01) with optimal decay = {best_lambda}...")
+    print(f"\nTraining final models on entire tuning dataset (Date < 2026-07-01) with optimal decay = {best_lambda}...")
     train_val_weights = np.maximum(0.2, np.exp(-best_lambda * days_diff)).values
     y_reg_train_val = train_val_df['Target'].values
     y_clf_train_val = (y_reg_train_val > 0).astype(int)

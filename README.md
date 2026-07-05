@@ -63,9 +63,7 @@ flowchart TD
 - **[data_processing.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/data_processing.py)**: Cleans and standardizes team names, and computes game-level possessions, pace, and defensive/offensive ratings.
 - **[feature_engineering.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/feature_engineering.py)**: Builds the dataset (`ml_ready_data.csv`) by calculating chronological features including:
   - **Start-of-Season Carry-over Regression**: Handles early-season sample size issues by regressing the starting EMA from the previous season's final values:
-    \[
-    EMA_{\text{start}} = 0.75 \cdot EMA_{\text{prev\_season\_final}} + 0.25 \cdot \mu_{\text{league\_mean\_prev\_season}}
-    \]
+     $$EMA_{\text{start}} = 0.75 \cdot EMA_{\text{prev\_season\_final}} + 0.25 \cdot \mu_{\text{league\_mean\_prev\_season}}$$
   - **Chronological Global Means**: Imputes missing values using only games *prior* to the current game's date, preventing look-ahead bias.
   - **Dynamic, Leak-Free Squad Health**: Queries the `historical_inactives` table for historical games on Date $D$ to dynamically calculate missing usage, BPM, and minutes, falling back to the active `injuries` table only for future matchups.
   - **Team EMA Ratings**: 5-game and 10-game Exponential Moving Averages of Offensive, Defensive, and Net Ratings.
@@ -88,22 +86,16 @@ flowchart TD
   - **Platt / Isotonic Calibration**: Trains two independent `IsotonicRegression` models on out-of-fold cross-validation probabilities (`stage1_calibrator` and `stage2_calibrator`) to scale the final output win probabilities.
 - **[predict.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/predict.py)**: Handles inference, including feature mean NaN imputation and prediction routing:
   - If closing lines are available, predicts using Stage 2. Dynamic volatility standard deviation is computed from the quantiles:
-    \[
-    \sigma_{\text{pred}} = \frac{P_{90} - P_{10}}{2.563}
-    \]
+     $$\sigma_{\text{pred}} = \frac{P_{90} - P_{10}}{2.563}$$
   - Calculates win probability by blending the Normal CDF of the predicted spread/residual ($\Phi$) and the direct stacked classifier output 50/50, and passes it through the fitted calibrator model:
-    \[
-    P(\text{Home Win}) = \text{Calibrator}\left(0.5 \cdot \Phi\left(\frac{\mu_{\text{pred}}}{\sigma_{\text{pred}}}\right) + 0.5 \cdot P_{\text{classifier}}\right)
-    \]
+     $$P(\text{Home Win}) = \text{Calibrator}\left(0.5 \cdot \Phi\left(\frac{\mu_{\text{pred}}}{\sigma_{\text{pred}}}\right) + 0.5 \cdot P_{\text{classifier}}\right)$$
   - If closing lines are missing (e.g. future games), routes prediction automatically to Stage 1 ELO fallback models.
 
 ### 🎰 4. Betting Simulator & Backtester
 - **[simulate_season.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/simulate_season.py)**: Runs full season historical simulations. Compares Model, Bookie, and Polymarket probabilities against actual results (via Accuracy, Brier Score, and Log Loss). Simulates betting strategies:
   - **Flat Betting**: Wagering a fixed percentage of initial bankroll (e.g. 2%).
   - **Kelly Criterion**: Dynamic bet sizing proportional to model edge:
-    \[
-    f^* = \text{Fractional Factor} \times \frac{P_{\text{model}} \cdot \text{Odds} - 1}{\text{Odds} - 1}
-    \]
+     $$f^* = \text{Fractional Factor} \times \frac{P_{\text{model}} \cdot \text{Odds} - 1}{\text{Odds} - 1}$$
     Uses **Quarter-Kelly** (factor of 0.25) capped at 15% of current bankroll.
   - **Monte Carlo Standings**: Performs a 1,000-trial simulation of team win-loss standings to compare model expectations against actual final results.
 
@@ -204,13 +196,9 @@ Follow this sequence of steps to run the pipeline, scrape historical stats, trai
 The simulator evaluates predictive quality using:
 - **Accuracy**: Winner classification rate.
 - **Brier Score**: Measures probability calibration. Closer to `0` is perfect:
-  \[
-  BS = \frac{1}{N} \sum_{t=1}^N (P_t - Y_t)^2
-  \]
+  $$BS = \frac{1}{N} \sum_{t=1}^N (P_t - Y_t)^2$$
 - **Log Loss**: Binary cross-entropy penalizing confident incorrect predictions:
-  \[
-  LL = -\frac{1}{N} \sum_{t=1}^N \left[ Y_t \ln(P_t) + (1 - Y_t) \ln(1 - P_t) \right]
-  \]
+  $$LL = -\frac{1}{N} \sum_{t=1}^N \left[ Y_t \ln(P_t) + (1 - Y_t) \ln(1 - P_t) \right]$$
 - **ROI (%)**: Return on Investment computed across the total amount wagered over the season.
 
 ---
