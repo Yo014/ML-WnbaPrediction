@@ -10,7 +10,7 @@ from sklearn.metrics import mean_absolute_error, log_loss
 from scipy.stats import norm
 from sklearn.isotonic import IsotonicRegression
 
-from stacking_models import StackedEnsembleRegressor, StackedEnsembleClassifier
+from stacking_models import StackedEnsembleRegressor, StackedEnsembleClassifier, FastDistributionRegressor
 
 class WalkForwardSeasonSplitter:
     def __init__(self, seasons_series):
@@ -82,13 +82,17 @@ def train_model():
         'Home_Days_Rest', 'Home_Back_To_Back', 'Home_Three_In_Four',
         'Away_Days_Rest', 'Away_Back_To_Back', 'Away_Three_In_Four',
         'Rest_Diff',
+        'Home_Travel_Miles_7d', 'Home_Timezone_Changes_7d', 'Home_Fatigue_Score',
+        'Away_Travel_Miles_7d', 'Away_Timezone_Changes_7d', 'Away_Fatigue_Score',
+        'Travel_Miles_Diff', 'Fatigue_Score_Diff',
         
         # Talent Floor
         'Home_Talent_Floor', 'Away_Talent_Floor', 'Talent_Floor_Diff',
         
         # Squad Health
         'Home_Missing_Usage_Pct', 'Away_Missing_Usage_Pct',
-        'Home_Missing_BPM_Pct', 'Away_Missing_BPM_Pct',
+        'Home_Missing_Net_Rating', 'Away_Missing_Net_Rating',
+        'Home_Missing_PIE', 'Away_Missing_PIE',
         'Home_Missing_Minutes_Pct', 'Away_Missing_Minutes_Pct',
         'Home_Injured_Players_Count', 'Away_Injured_Players_Count',
         'Missing_Usage_Diff',
@@ -150,14 +154,31 @@ def train_model():
     days_diff = (pd.to_datetime(max_train_date) - pd.to_datetime(train_val_df['Date'])).dt.days
     
     # 4. Baseline Feature Selection
-    print("\nPerforming baseline feature selection using a preliminary XGBRegressor...")
-    # Use standard default decay parameter for feature importance extraction
+    print("\nPerforming consensus baseline feature selection across XGBoost, LightGBM, and CatBoost...")
     prelim_weights = np.maximum(0.2, np.exp(-0.000551 * days_diff)).values
+    
     prelim_xgb = xgb.XGBRegressor(n_estimators=100, max_depth=4, learning_rate=0.03, random_state=42, verbosity=0)
     prelim_xgb.fit(train_val_df[full_features], train_val_df['Target'].values, sample_weight=prelim_weights)
-    importances = prelim_xgb.feature_importances_
+    imp_xgb = prelim_xgb.feature_importances_
+    if imp_xgb.sum() > 0:
+        imp_xgb = imp_xgb / imp_xgb.sum()
+
+    prelim_lgb = lgb.LGBMRegressor(n_estimators=100, max_depth=4, learning_rate=0.03, random_state=42, verbose=-1)
+    prelim_lgb.fit(train_val_df[full_features], train_val_df['Target'].values, sample_weight=prelim_weights)
+    imp_lgb = prelim_lgb.feature_importances_
+    if imp_lgb.sum() > 0:
+        imp_lgb = imp_lgb / imp_lgb.sum()
+
+    from catboost import CatBoostRegressor
+    prelim_cat = CatBoostRegressor(n_estimators=100, max_depth=4, learning_rate=0.03, random_state=42, verbose=0)
+    prelim_cat.fit(train_val_df[full_features], train_val_df['Target'].values, sample_weight=prelim_weights)
+    imp_cat = prelim_cat.feature_importances_
+    if imp_cat.sum() > 0:
+        imp_cat = imp_cat / imp_cat.sum()
+
+    consensus_importances = (imp_xgb + imp_lgb + imp_cat) / 3.0
     
-    selected_features = [feat for feat, imp in zip(full_features, importances) if imp >= 0.002]
+    selected_features = [feat for feat, imp in zip(full_features, consensus_importances) if imp >= 0.001]
     # Fallback to avoid empty selection
     if not selected_features:
         selected_features = list(full_features)
@@ -165,12 +186,12 @@ def train_model():
     selected_baseline_features = [f for f in selected_features if f in baseline_features]
     selected_full_features = [f for f in selected_features if f in full_features]
     
-    print(f"Selected {len(selected_features)} features (out of {len(full_features)}) with importance >= 0.002")
+    print(f"Selected {len(selected_features)} features (out of {len(full_features)}) with consensus importance >= 0.001")
     print(f"Selected Baseline features: {len(selected_baseline_features)}")
     print(f"Selected Full features: {len(selected_full_features)}")
     
     # 5. Dynamic Decay Parameter Optimization (Grid Search)
-    lambdas = [0.0001, 0.0003, 0.0005, 0.0008, 0.001, 0.0015, 0.002]
+    lambdas = [0.0005, 0.001, 0.0015, 0.002, 0.0025]
     best_log_loss = float('inf')
     best_lambda = None
     best_oof_s1 = None
@@ -214,18 +235,11 @@ def train_model():
             # Fit Stage 2 Models
             y_residual_tr = y_tr_reg - train_fold_df['ClosingSpread'].values
             
-            fold_stage2_reg = StackedEnsembleRegressor()
-            fold_stage2_reg.fit(train_fold_df[selected_full_features], y_residual_tr, nested_splits, sample_weight=w_fold)
+            fold_stage2_reg = FastDistributionRegressor()
+            fold_stage2_reg.fit(train_fold_df[selected_full_features], y_residual_tr, cv_splits=nested_splits, sample_weight=w_fold)
             
             fold_stage2_clf = StackedEnsembleClassifier()
             fold_stage2_clf.fit(train_fold_df[selected_full_features], y_tr_clf, nested_splits, sample_weight=w_fold)
-            
-            # Fit Quantile Regressors
-            fold_q10 = lgb.LGBMRegressor(objective='quantile', alpha=0.10, random_state=42, verbose=-1)
-            fold_q10.fit(train_fold_df[selected_full_features], y_tr_reg, sample_weight=w_fold)
-            
-            fold_q90 = lgb.LGBMRegressor(objective='quantile', alpha=0.90, random_state=42, verbose=-1)
-            fold_q90.fit(train_fold_df[selected_full_features], y_tr_reg, sample_weight=w_fold)
             
             # Predict on val_idx
             X_val_baseline = train_val_df.iloc[val_idx][selected_baseline_features]
@@ -235,14 +249,12 @@ def train_model():
             s1_prob = fold_stage1_clf.predict_proba(X_val_baseline)[:, 1]
             oof_stage1_probs[val_idx] = s1_prob
             
-            # Stage 2 prediction (blended)
-            s2_residual_pred = fold_stage2_reg.predict(X_val_full)
+            # Stage 2 prediction (blended) using FastDistributionRegressor
+            stage2_dist = fold_stage2_reg.pred_dist(X_val_full)
+            s2_residual_pred = stage2_dist.loc
             s2_predicted_margin = train_val_df.iloc[val_idx]['ClosingSpread'].values + s2_residual_pred
             
-            p10_pred = fold_q10.predict(X_val_full)
-            p90_pred = fold_q90.predict(X_val_full)
-            
-            sigma_pred = (p90_pred - p10_pred) / 2.563
+            sigma_pred = stage2_dist.scale
             sigma_pred = np.maximum(sigma_pred, 1e-3)
             
             P_CDF = norm.cdf(s2_predicted_margin / sigma_pred)
@@ -288,21 +300,14 @@ def train_model():
     stage1_clf = StackedEnsembleClassifier()
     stage1_clf.fit(train_val_df[selected_baseline_features], y_clf_train_val, cv_splits, sample_weight=train_val_weights)
     
-    print("\nTraining Stage 2 Stacking Models on full_features...")
+    print("\nTraining Stage 2 FastDistributionRegressor on full_features...")
     y_residual_train_val = y_reg_train_val - train_val_df['ClosingSpread'].values
     
-    stage2_reg = StackedEnsembleRegressor()
-    stage2_reg.fit(train_val_df[selected_full_features], y_residual_train_val, cv_splits, sample_weight=train_val_weights)
+    stage2_reg = FastDistributionRegressor()
+    stage2_reg.fit(train_val_df[selected_full_features], y_residual_train_val, cv_splits=cv_splits, sample_weight=train_val_weights)
     
     stage2_clf = StackedEnsembleClassifier()
     stage2_clf.fit(train_val_df[selected_full_features], y_clf_train_val, cv_splits, sample_weight=train_val_weights)
-    
-    print("\nTraining Stage 2 Quantile Regressors (LGBM) on full_features...")
-    quantile_10 = lgb.LGBMRegressor(objective='quantile', alpha=0.10, random_state=42, verbose=-1)
-    quantile_10.fit(train_val_df[selected_full_features], y_reg_train_val, sample_weight=train_val_weights)
-    
-    quantile_90 = lgb.LGBMRegressor(objective='quantile', alpha=0.90, random_state=42, verbose=-1)
-    quantile_90.fit(train_val_df[selected_full_features], y_reg_train_val, sample_weight=train_val_weights)
     
     # 8. Evaluate all models on the held-out June 2026 test set
     X_test_baseline = test_df[selected_baseline_features]
@@ -329,15 +334,12 @@ def train_model():
     stage1_cal_accuracy = np.mean(y_test_clf == (stage1_prob_cal >= 0.5)) * 100.0
     stage1_cal_logloss = log_loss(y_test_clf, stage1_prob_cal)
     
-    # Stage 2 Stacking & Volatility
-    stage2_residual_pred = stage2_reg.predict(X_test_full)
+    # Stage 2 Volatility & prediction using FastDistributionRegressor
+    stage2_dist = stage2_reg.pred_dist(X_test_full)
+    stage2_residual_pred = stage2_dist.loc
     stage2_predicted_margin = test_df['ClosingSpread'].values + stage2_residual_pred
     
-    p10_pred = quantile_10.predict(X_test_full)
-    p90_pred = quantile_90.predict(X_test_full)
-    
-    # Volatility standard deviation
-    sigma_pred = (p90_pred - p10_pred) / 2.563
+    sigma_pred = stage2_dist.scale
     sigma_pred = np.maximum(sigma_pred, 1e-3)
     
     P_CDF = norm.cdf(stage2_predicted_margin / sigma_pred)
@@ -356,7 +358,7 @@ def train_model():
     
     # Print metrics table
     print("\n" + "="*95)
-    print(f"{'MODEL EVALUATION SUMMARY (JUNE 2026 TEST SET)':^95}")
+    print(f"{'MODEL EVALUATION SUMMARY (JULY 2026 TEST SET)':^95}")
     print("="*95)
     print(f"{'Model / Metric':<45} | {'MAE':^12} | {'Accuracy (%)':^15} | {'Log Loss':^12}")
     print("-"*95)
@@ -388,12 +390,9 @@ def train_model():
     
     # Stage 2 Stacking Re-fit
     y_residual_refit = y_reg_refit - refit_df['ClosingSpread'].values
-    stage2_reg.fit(X_refit_full, y_residual_refit, cv_splits_refit, sample_weight=refit_weights)
+    stage2_reg = FastDistributionRegressor()
+    stage2_reg.fit(X_refit_full, y_residual_refit, cv_splits=cv_splits_refit, sample_weight=refit_weights)
     stage2_clf.fit(X_refit_full, y_clf_refit, cv_splits_refit, sample_weight=refit_weights)
-    
-    # Quantile Re-fit
-    quantile_10.fit(X_refit_full, y_reg_refit, sample_weight=refit_weights)
-    quantile_90.fit(X_refit_full, y_reg_refit, sample_weight=refit_weights)
     
     # Calculate traditional standard deviation of residuals on refitted full dataset
     stage2_pred_residual_refit = stage2_reg.predict(X_refit_full)
@@ -409,17 +408,23 @@ def train_model():
         'stage1_classifier': stage1_clf,
         'stage2_regressor': stage2_reg,
         'stage2_classifier': stage2_clf,
-        'quantile_10': quantile_10,
-        'quantile_90': quantile_90,
         'stage1_calibrator': stage1_calibrator,
         'stage2_calibrator': stage2_calibrator
     }
     with open(model_filename, 'wb') as f:
         pickle.dump(model_dict, f)
         
-    # Get feature importances from Stage 2 base models (XGBoost)
+    # Get feature importances from Stage 2 base models
     try:
-        reg_importances = stage2_reg.base_models_[0].feature_importances_
+        if hasattr(stage2_reg, 'base_estimator_') and hasattr(stage2_reg.base_estimator_, 'base_models_'):
+            reg_importances = stage2_reg.base_estimator_.base_models_[0].feature_importances_
+        elif hasattr(stage2_reg, 'feature_importances_'):
+            reg_importances = stage2_reg.feature_importances_
+            if isinstance(reg_importances, (list, tuple, np.ndarray)) and len(reg_importances) > 0 and isinstance(reg_importances[0], (list, tuple, np.ndarray)):
+                reg_importances = reg_importances[0]
+        else:
+            reg_importances = np.zeros(len(selected_full_features))
+
         reg_feat_imp = sorted(
             {feat: float(imp) for feat, imp in zip(selected_full_features, reg_importances)}.items(),
             key=lambda item: item[1],
@@ -485,3 +490,4 @@ def train_model():
 
 if __name__ == '__main__':
     train_model()
+

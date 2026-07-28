@@ -3,10 +3,14 @@ import React from 'react';
 export default function PlayerCard({ player, onToggleInjury }) {
   const minVal = (player.min ?? 0).toFixed(1);
   const usgVal = ((player.usg_pct ?? 0) * 100).toFixed(1);
-  const bpmVal = (player.bpm ?? 0).toFixed(1);
   
-  const bpmClass = player.bpm >= 0 ? 'positive-bpm' : 'negative-bpm';
-  const bpmSign = player.bpm > 0 ? '+' : '';
+  const netRating = player.net_rating ?? player.net ?? 0.0;
+  const netVal = netRating.toFixed(1);
+  const netClass = netRating >= 0 ? 'positive-net' : 'negative-net';
+  const netSign = netRating > 0 ? '+' : '';
+  
+  const pieRaw = player.pie ?? 0.0;
+  const pieVal = (pieRaw <= 1.0 && pieRaw > 0 ? pieRaw * 100 : pieRaw).toFixed(1);
   
   let injuryBadge = null;
   if (player.injured) {
@@ -44,7 +48,8 @@ export default function PlayerCard({ player, onToggleInjury }) {
         <div className="player-sub">
           <span className="player-stats-pill">{minVal} MPG</span>
           <span className="player-stats-pill">{usgVal}% USG</span>
-          <span className={`player-stats-pill ${bpmClass}`}>{bpmSign}{bpmVal} BPM</span>
+          <span className={`player-stats-pill ${netClass}`}>{netSign}{netVal} NET</span>
+          <span className="player-stats-pill">{pieVal}% PIE</span>
           {injuryBadge}
         </div>
       </div>

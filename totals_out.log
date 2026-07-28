@@ -1,0 +1,2 @@
+/Users/santomukiza/.matplotlib is not a writable directory
+Matplotlib created a temporary cache directory at /var/folders/c0/h513rlp1541g4b7gzb40knrr0000gn/T/matplotlib-r82v3ycu because there was an issue with the default path (/Users/santomukiza/.matplotlib); it is highly recommended to set the MPLCONFIGDIR environment variable to a writable directory, in particular to speed up the import of Matplotlib and to better support multiprocessing.

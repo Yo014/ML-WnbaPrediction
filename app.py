@@ -1,4 +1,5 @@
 import sys
+import math
 import os
 # Append Scrapers directory to Python search path dynamically
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Scrapers'))
@@ -355,7 +356,7 @@ def get_roster(team_name):
     
     # Query players on the team in 2026
     cursor.execute("""
-        SELECT Player, MIN, USG_PCT, BPM 
+        SELECT Player, MIN, USG_PCT, NET_RATING, PIE 
         FROM player_stats 
         WHERE Team = ? AND Season = 2026 
         ORDER BY Player
@@ -375,7 +376,8 @@ def get_roster(team_name):
             'name': player_name,
             'min': r[1] or 0.0,
             'usg_pct': r[2] or 0.0,
-            'bpm': r[3] or 0.0,
+            'net_rating': r[3] or 0.0,
+            'pie': r[4] or 0.0,
             'injured': is_injured,
             'injury_status': injury_dict[player_name]['status'] if is_injured else None,
             'expected_return': injury_dict[player_name]['return_date'] if is_injured else None
@@ -594,6 +596,224 @@ def auto_settle_bets(cursor):
     # Commit the changes to the database using the cursor's connection
     cursor.connection.commit()
 
+def calc_travel_and_fatigue_for_live_prediction(cursor, team, is_home, prediction_date, opponent):
+    TEAM_COORDINATES = {
+        "Atlanta Dream": (33.7490, -84.3880),
+        "Chicago Sky": (41.8781, -87.6298),
+        "Connecticut Sun": (41.4871, -72.0784),
+        "Dallas Wings": (32.7357, -97.1081),
+        "Golden State Valkyries": (37.7749, -122.4194),
+        "Indiana Fever": (39.7684, -86.1581),
+        "Los Angeles Sparks": (34.0522, -118.2437),
+        "Las Vegas Aces": (36.1699, -115.1398),
+        "Minnesota Lynx": (44.9778, -93.2650),
+        "New York Liberty": (40.6782, -73.9442),
+        "Portland Fire": (45.5152, -122.6784),
+        "Phoenix Mercury": (33.4484, -112.0740),
+        "Seattle Storm": (47.6062, -122.3321),
+        "Toronto Tempo": (43.6532, -79.3832),
+        "Washington Mystics": (38.9072, -77.0369)
+    }
+
+    TEAM_TIMEZONES = {
+        "Atlanta Dream": -5.0,
+        "Chicago Sky": -6.0,
+        "Connecticut Sun": -5.0,
+        "Dallas Wings": -6.0,
+        "Golden State Valkyries": -8.0,
+        "Indiana Fever": -5.0,
+        "Los Angeles Sparks": -8.0,
+        "Las Vegas Aces": -8.0,
+        "Minnesota Lynx": -6.0,
+        "New York Liberty": -5.0,
+        "Portland Fire": -8.0,
+        "Phoenix Mercury": -7.0,
+        "Seattle Storm": -8.0,
+        "Toronto Tempo": -5.0,
+        "Washington Mystics": -5.0
+    }
+
+    def haversine_distance(coord1, coord2):
+        lat1, lon1 = coord1
+        lat2, lon2 = coord2
+        lat1_rad, lon1_rad = math.radians(lat1), math.radians(lon1)
+        lat2_rad, lon2_rad = math.radians(lat2), math.radians(lon2)
+        dlat = lat2_rad - lat1_rad
+        dlon = lon2_rad - lon1_rad
+        a = math.sin(dlat / 2.0)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon / 2.0)**2
+        c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+        R = 3958.8
+        return R * c
+
+    # Determine location of current game
+    curr_location = team if is_home else opponent
+    curr_coord = TEAM_COORDINATES.get(curr_location, (39.8283, -98.5795))
+    curr_tz = TEAM_TIMEZONES.get(curr_location, -5.0)
+
+    # Get team's games in the current season before prediction_date
+    season = int(prediction_date[:4])
+    season_start = f"{season}-01-01"
+    cursor.execute("""
+        SELECT Date, HomeTeam, AwayTeam
+        FROM raw_matches
+        WHERE Date >= ? AND (HomeTeam = ? OR AwayTeam = ?) AND Date < ?
+        ORDER BY Date DESC
+    """, (season_start, team, team, prediction_date))
+    rows = cursor.fetchall()
+
+    # Convert rows to a list of dicts with game location and timezone
+    games = []
+    # Add the upcoming game at the start (index 0)
+    games.append({
+        'Date': prediction_date,
+        'Location': curr_location,
+        'Coordinates': curr_coord,
+        'TZ': curr_tz
+    })
+
+    for row in rows:
+        g_date, home, away = row
+        g_loc = home # Home team court
+        games.append({
+            'Date': g_date,
+            'Location': g_loc,
+            'Coordinates': TEAM_COORDINATES.get(g_loc, (39.8283, -98.5795)),
+            'TZ': TEAM_TIMEZONES.get(g_loc, -5.0)
+        })
+
+    # Now calculate travel distances and timezone changes between consecutive games
+    for i in range(len(games)):
+        if i < len(games) - 1:
+            prev_g = games[i+1]
+            dist = haversine_distance(prev_g['Coordinates'], games[i]['Coordinates'])
+            tz_change = abs(games[i]['TZ'] - prev_g['TZ'])
+        else:
+            # First game of season, travel from home city
+            home_coord = TEAM_COORDINATES.get(team, (39.8283, -98.5795))
+            dist = haversine_distance(home_coord, games[i]['Coordinates'])
+            tz_change = abs(games[i]['TZ'] - TEAM_TIMEZONES.get(team, -5.0))
+        games[i]['Travel_Distance'] = dist
+        games[i]['Timezone_Change'] = tz_change
+
+    # Calculate rolling 7-day fatigue score, travel miles, and timezone changes for the upcoming game (index 0)
+    d_upcoming = pd.to_datetime(prediction_date)
+    tot_miles = 0.0
+    tot_tz = 0.0
+    fatigue = 0.0
+
+    for i, g in enumerate(games):
+        d_g = pd.to_datetime(g['Date'])
+        days_ago = (d_upcoming - d_g).days
+        if days_ago <= 7:
+            tot_miles += g['Travel_Distance']
+            tot_tz += g['Timezone_Change']
+            fatigue += (g['Travel_Distance'] / 1000.0) / (days_ago + 1.0)
+
+    # Check if back-to-back
+    if len(games) > 1:
+        days_rest = (d_upcoming - pd.to_datetime(games[1]['Date'])).days
+        if days_rest == 1:
+            fatigue += 0.5
+
+    return tot_miles, tot_tz, fatigue
+
+def _make_prediction_from_features(feature_dict, fd_match):
+    # Predict spread
+    if fd_match:
+        features_list = METADATA['full_features']
+        features_df = pd.DataFrame([feature_dict])[features_list]
+        residual_dist = MODEL['stage2_regressor'].pred_dist(features_df)
+        residual_pred = float(residual_dist.loc[0])
+        predicted_spread = fd_match['closing_spread'] + residual_pred
+    else:
+        features_list = METADATA['baseline_features']
+        features_df = pd.DataFrame([feature_dict])[features_list]
+        predicted_spread = float(MODEL['stage1_regressor'].predict(features_df)[0])
+        
+    # Predict totals
+    t_baseline_list = TOTAL_METADATA['baseline_features']
+    t_baseline_df = pd.DataFrame([feature_dict])[t_baseline_list]
+    s1_pace = float(TOTAL_MODEL['stage1_pace_regressor'].predict(t_baseline_df)[0])
+    s1_home_eff = float(TOTAL_MODEL['stage1_home_eff_regressor'].predict(t_baseline_df)[0])
+    s1_away_eff = float(TOTAL_MODEL['stage1_away_eff_regressor'].predict(t_baseline_df)[0])
+    s1_total_pred = s1_pace * (s1_home_eff + s1_away_eff) / 100.0
+    
+    if fd_match:
+        feature_dict_totals = feature_dict.copy()
+        feature_dict_totals['s1_total_pred'] = s1_total_pred
+        t_features_list = TOTAL_METADATA['full_features']
+        t_features_df = pd.DataFrame([feature_dict_totals])[t_features_list]
+        
+        t_residual_dist = TOTAL_MODEL['stage2_regressor'].pred_dist(t_features_df)
+        t_residual_pred = float(t_residual_dist.mean()[0])
+        predicted_total = fd_match['over_under'] + t_residual_pred
+    else:
+        predicted_total = s1_total_pred
+        
+    return predicted_spread, predicted_total
+
+
+def get_perturbed_dict(base_dict, category, away_fatigue=0.0):
+    d = base_dict.copy()
+    if category == 'team_strength':
+        d['Net_Rating_Diff_5'] = 0.0
+        d['Net_Rating_Diff_10'] = 0.0
+        d['Talent_Floor_Diff'] = 0.0
+        d['H2H_Bias'] = 0.0
+    elif category == 'travel_fatigue':
+        d['Home_Travel_Miles_7d'] = 0.0
+        d['Home_Timezone_Changes_7d'] = 0.0
+        d['Home_Fatigue_Score'] = 0.0
+        d['Away_Travel_Miles_7d'] = 0.0
+        d['Away_Timezone_Changes_7d'] = 0.0
+        d['Away_Fatigue_Score'] = 0.0
+        d['Travel_Miles_Diff'] = 0.0
+        d['Fatigue_Score_Diff'] = 0.0
+        # Revert EMA discounts
+        if away_fatigue > 0.0:
+            scale_off = 1.0 - 0.005 * away_fatigue
+            scale_def = 1.0 + 0.005 * away_fatigue
+            if scale_off > 0:
+                d['Away_Offensive_Rating_EMA_5'] /= scale_off
+                d['Away_Offensive_Rating_EMA_10'] /= scale_off
+                d['Away_eFG%_EMA_5'] /= scale_off
+                d['Away_eFG%_EMA_10'] /= scale_off
+                d['Away_ORB%_EMA_5'] /= scale_off
+                d['Away_ORB%_EMA_10'] /= scale_off
+            if scale_def > 0:
+                d['Away_Defensive_Rating_EMA_5'] /= scale_def
+                d['Away_Defensive_Rating_EMA_10'] /= scale_def
+            # Recompute Net Ratings
+            d['Away_Net_Rating_EMA_5'] = d['Away_Offensive_Rating_EMA_5'] - d['Away_Defensive_Rating_EMA_5']
+            d['Away_Net_Rating_EMA_10'] = d['Away_Offensive_Rating_EMA_10'] - d['Away_Defensive_Rating_EMA_10']
+            d['Net_Rating_Diff_5'] = d['Home_Net_Rating_EMA_5'] - d['Away_Net_Rating_EMA_5']
+            d['Net_Rating_Diff_10'] = d['Home_Net_Rating_EMA_10'] - d['Away_Net_Rating_EMA_10']
+    elif category == 'injuries':
+        d['Home_Missing_Usage_Pct'] = 0.0
+        d['Away_Missing_Usage_Pct'] = 0.0
+        d['Home_Missing_Net_Rating'] = 0.0
+        d['Away_Missing_Net_Rating'] = 0.0
+        d['Home_Missing_PIE'] = 0.0
+        d['Away_Missing_PIE'] = 0.0
+        d['Home_Missing_Minutes_Pct'] = 0.0
+        d['Away_Missing_Minutes_Pct'] = 0.0
+        d['Home_Injured_Players_Count'] = 0
+        d['Away_Injured_Players_Count'] = 0
+        d['Missing_Usage_Diff'] = 0.0
+    elif category == 'referee':
+        d['Ref_Pts_EMA'] = 160.0
+        d['Ref_Fouls_EMA'] = 36.0
+        d['Ref_HomeWin_EMA'] = 0.5
+    elif category == 'rest_schedule':
+        d['Rest_Diff'] = 0.0
+        d['Home_Days_Rest'] = 3.0
+        d['Away_Days_Rest'] = 3.0
+        d['Home_Back_To_Back'] = 0.0
+        d['Away_Back_To_Back'] = 0.0
+        d['Home_Three_In_Four'] = 0.0
+        d['Away_Three_In_Four'] = 0.0
+    return d
+
 def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chief=None, home_injured_list=None, away_injured_list=None, fd_match=None):
     """
     Abstracted WNBA point spread and win probability prediction pipeline.
@@ -617,17 +837,18 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
     if away_injured_list is None:
         cursor.execute("SELECT Player FROM injuries WHERE Team = ?", (away_team,))
         away_injured_list = [r[0] for r in cursor.fetchall()]
-        
+            
     # Recalculate Health Metrics for Home and Away
     def calc_squad_health(injured_players):
         missing_usage = 0.0
-        missing_bpm = 0.0
+        missing_net_rating = 0.0
+        missing_pie = 0.0
         missing_minutes = 0.0
         injured_count = len(injured_players)
         
         for player in injured_players:
             cursor.execute("""
-                SELECT MIN, USG_PCT, BPM 
+                SELECT MIN, USG_PCT, NET_RATING, PIE 
                 FROM player_stats 
                 WHERE Player = ? 
                 ORDER BY Season DESC 
@@ -637,15 +858,18 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
             if row:
                 min_avg = row[0] or 0.0
                 usg_pct = row[1] or 0.0
-                bpm = row[2] or 0.0
+                net_rating = row[2] or 0.0
+                pie = row[3] or 0.0
                 
                 missing_usage += usg_pct * 100.0
-                missing_bpm += bpm
+                missing_net_rating += min_avg * net_rating
+                missing_pie += min_avg * pie
                 missing_minutes += (min_avg / 200.0) * 100.0
                 
         return {
             'Missing_Usage_Pct': round(missing_usage, 3),
-            'Missing_BPM_Pct': round(missing_bpm, 3),
+            'Missing_Net_Rating': round(missing_net_rating, 3),
+            'Missing_PIE': round(missing_pie, 3),
             'Missing_Minutes_Pct': round(missing_minutes, 3),
             'Injured_Players_Count': injured_count
         }
@@ -731,8 +955,6 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
     except Exception as db_err:
         print(f"Error querying polymarket price in prediction: {db_err}")
         
-    conn.close()
-    
     if fd_match:
         bookie_home_odds = fd_match['home_odds']
         bookie_away_odds = fd_match['away_odds']
@@ -758,22 +980,51 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
     else:
         market_disagreement = 0.0
         
-    # Recalculate Net Rating EMAs
+    # Calculate Live Travel and Fatigue features
+    home_travel_miles, home_timezone_changes, home_fatigue = calc_travel_and_fatigue_for_live_prediction(
+        cursor, home_team, True, prediction_date, away_team
+    )
+    away_travel_miles, away_timezone_changes, away_fatigue = calc_travel_and_fatigue_for_live_prediction(
+        cursor, away_team, False, prediction_date, home_team
+    )
+    travel_miles_diff = home_travel_miles - away_travel_miles
+    fatigue_score_diff = home_fatigue - away_fatigue
+    conn.close()
+
+    # Recalculate Net Rating EMAs and four factors with away fatigue discount
+    away_off_5 = get_ema_value(away_emas, 'Offensive_Rating_EMA_5') * (1.0 - 0.005 * away_fatigue)
+    away_def_5 = get_ema_value(away_emas, 'Defensive_Rating_EMA_5') * (1.0 + 0.005 * away_fatigue)
+    away_off_10 = get_ema_value(away_emas, 'Offensive_Rating_EMA_10') * (1.0 - 0.005 * away_fatigue)
+    away_def_10 = get_ema_value(away_emas, 'Defensive_Rating_EMA_10') * (1.0 + 0.005 * away_fatigue)
+    
+    away_efg_5 = get_ema_value(away_emas, 'eFG%_EMA_5') * (1.0 - 0.005 * away_fatigue)
+    away_orb_5 = get_ema_value(away_emas, 'ORB%_EMA_5') * (1.0 - 0.005 * away_fatigue)
+    away_efg_10 = get_ema_value(away_emas, 'eFG%_EMA_10') * (1.0 - 0.005 * away_fatigue)
+    away_orb_10 = get_ema_value(away_emas, 'ORB%_EMA_10') * (1.0 - 0.005 * away_fatigue)
+
     home_net_5 = get_ema_value(home_emas, 'Offensive_Rating_EMA_5') - get_ema_value(home_emas, 'Defensive_Rating_EMA_5')
     home_net_10 = get_ema_value(home_emas, 'Offensive_Rating_EMA_10') - get_ema_value(home_emas, 'Defensive_Rating_EMA_10')
-    away_net_5 = get_ema_value(away_emas, 'Offensive_Rating_EMA_5') - get_ema_value(away_emas, 'Defensive_Rating_EMA_5')
-    away_net_10 = get_ema_value(away_emas, 'Offensive_Rating_EMA_10') - get_ema_value(away_emas, 'Defensive_Rating_EMA_10')
+    away_net_5 = away_off_5 - away_def_5
+    away_net_10 = away_off_10 - away_def_10
     
+    expected_pace = (get_ema_value(home_emas, 'Pace_EMA_10') * get_ema_value(away_emas, 'Pace_EMA_10')) / 80.0
+    home_expected_pts = (get_ema_value(home_emas, 'Offensive_Rating_EMA_10') * away_def_10 / 100.0) * (expected_pace / 100.0)
+    away_expected_pts = (away_off_10 * get_ema_value(home_emas, 'Defensive_Rating_EMA_10') / 100.0) * (expected_pace / 100.0)
+    expected_game_total = home_expected_pts + away_expected_pts
+    ref_foul_impact = ref_emas['Ref_Fouls_EMA'] - 38.0
+    ref_freethrow_rate = ref_emas['Ref_Pts_EMA'] / (ref_emas['Ref_Fouls_EMA'] + 1e-5)
+    combined_fatigue_score = home_fatigue + away_fatigue
+
     # Reconstruct Feature Dictionary
     feature_dict = {
         'Home_Offensive_Rating_EMA_5': get_ema_value(home_emas, 'Offensive_Rating_EMA_5'),
         'Home_Defensive_Rating_EMA_5': get_ema_value(home_emas, 'Defensive_Rating_EMA_5'),
         'Home_Offensive_Rating_EMA_10': get_ema_value(home_emas, 'Offensive_Rating_EMA_10'),
         'Home_Defensive_Rating_EMA_10': get_ema_value(home_emas, 'Defensive_Rating_EMA_10'),
-        'Away_Offensive_Rating_EMA_5': get_ema_value(away_emas, 'Offensive_Rating_EMA_5'),
-        'Away_Defensive_Rating_EMA_5': get_ema_value(away_emas, 'Defensive_Rating_EMA_5'),
-        'Away_Offensive_Rating_EMA_10': get_ema_value(away_emas, 'Offensive_Rating_EMA_10'),
-        'Away_Defensive_Rating_EMA_10': get_ema_value(away_emas, 'Defensive_Rating_EMA_10'),
+        'Away_Offensive_Rating_EMA_5': away_off_5,
+        'Away_Defensive_Rating_EMA_5': away_def_5,
+        'Away_Offensive_Rating_EMA_10': away_off_10,
+        'Away_Defensive_Rating_EMA_10': away_def_10,
         'Home_Net_Rating_EMA_5': home_net_5,
         'Away_Net_Rating_EMA_5': away_net_5,
         'Home_Net_Rating_EMA_10': home_net_10,
@@ -788,14 +1039,14 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
         'Home_FT_Rate_EMA_10': get_ema_value(home_emas, 'FT_Rate_EMA_10'),
         'Home_Pace_EMA_5': get_ema_value(home_emas, 'Pace_EMA_5'),
         'Home_Pace_EMA_10': get_ema_value(home_emas, 'Pace_EMA_10'),
-        'Away_eFG%_EMA_5': get_ema_value(away_emas, 'eFG%_EMA_5'),
+        'Away_eFG%_EMA_5': away_efg_5,
         'Away_TOV%_EMA_5': get_ema_value(away_emas, 'TOV%_EMA_5'),
-        'Away_ORB%_EMA_5': get_ema_value(away_emas, 'ORB%_EMA_5'),
+        'Away_ORB%_EMA_5': away_orb_5,
         'Away_FT_Rate_EMA_5': get_ema_value(away_emas, 'FT_Rate_EMA_5'),
-        'Away_eFG%_EMA_10': get_ema_value(away_emas, 'eFG%_EMA_10'),
+        'Away_eFG%_EMA_10': away_efg_10,
         'Away_TOV%_EMA_10': get_ema_value(away_emas, 'TOV%_EMA_10'),
-        'Away_ORB%_EMA_10': get_ema_value(away_emas, 'ORB%_EMA_10'),
-        'Away_FT_Rate_EMA_10': get_ema_value(away_emas, 'FT_Rate_EMA_10'),
+        'Away_ORB%_EMA_10': away_orb_10,
+        'Away_FT_Rate_EMA_10': get_ema_value(away_emas, 'Away_FT_Rate_EMA_10'),
         'Away_Pace_EMA_5': get_ema_value(away_emas, 'Pace_EMA_5'),
         'Away_Pace_EMA_10': get_ema_value(away_emas, 'Pace_EMA_10'),
         'Home_Days_Rest': home_days_rest,
@@ -805,6 +1056,14 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
         'Away_Back_To_Back': away_b2b,
         'Away_Three_In_Four': away_three_in_four,
         'Rest_Diff': rest_diff,
+        'Home_Travel_Miles_7d': home_travel_miles,
+        'Home_Timezone_Changes_7d': home_timezone_changes,
+        'Home_Fatigue_Score': home_fatigue,
+        'Away_Travel_Miles_7d': away_travel_miles,
+        'Away_Timezone_Changes_7d': away_timezone_changes,
+        'Away_Fatigue_Score': away_fatigue,
+        'Travel_Miles_Diff': travel_miles_diff,
+        'Fatigue_Score_Diff': fatigue_score_diff,
         'Ref_Pts_EMA': ref_emas['Ref_Pts_EMA'],
         'Ref_Fouls_EMA': ref_emas['Ref_Fouls_EMA'],
         'Ref_HomeWin_EMA': ref_emas['Ref_HomeWin_EMA'],
@@ -820,8 +1079,10 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
         'Market_Disagreement': market_disagreement,
         'Home_Missing_Usage_Pct': home_health['Missing_Usage_Pct'],
         'Away_Missing_Usage_Pct': away_health['Missing_Usage_Pct'],
-        'Home_Missing_BPM_Pct': home_health['Missing_BPM_Pct'],
-        'Away_Missing_BPM_Pct': away_health['Missing_BPM_Pct'],
+        'Home_Missing_Net_Rating': home_health['Missing_Net_Rating'],
+        'Away_Missing_Net_Rating': away_health['Missing_Net_Rating'],
+        'Home_Missing_PIE': home_health['Missing_PIE'],
+        'Away_Missing_PIE': away_health['Missing_PIE'],
         'Home_Missing_Minutes_Pct': home_health['Missing_Minutes_Pct'],
         'Away_Missing_Minutes_Pct': away_health['Missing_Minutes_Pct'],
         'Home_Injured_Players_Count': home_health['Injured_Players_Count'],
@@ -837,7 +1098,14 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
         'TOV%_Diff_10': get_ema_value(home_emas, 'TOV%_EMA_10') - get_ema_value(away_emas, 'TOV%_EMA_10'),
         'ORB%_Diff_10': get_ema_value(home_emas, 'ORB%_EMA_10') - get_ema_value(away_emas, 'ORB%_EMA_10'),
         'FT_Rate_Diff_10': get_ema_value(home_emas, 'FT_Rate_EMA_10') - get_ema_value(away_emas, 'FT_Rate_EMA_10'),
-        'H2H_Bias': h2h_bias
+        'H2H_Bias': h2h_bias,
+        'Expected_Pace': expected_pace,
+        'Home_Expected_Pts': home_expected_pts,
+        'Away_Expected_Pts': away_expected_pts,
+        'Expected_Game_Total': expected_game_total,
+        'Ref_Foul_Impact': ref_foul_impact,
+        'Ref_FreeThrow_Rate': ref_freethrow_rate,
+        'Combined_Fatigue_Score': combined_fatigue_score
     }
     
     # Predict spread and win probabilities
@@ -845,12 +1113,11 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
         features_list = METADATA['full_features']
         features_df = pd.DataFrame([feature_dict])[features_list]
         
-        residual_pred = float(MODEL['stage2_regressor'].predict(features_df)[0])
+        residual_dist = MODEL['stage2_regressor'].pred_dist(features_df)
+        residual_pred = float(residual_dist.loc[0])
         predicted_spread = closing_spread + residual_pred
         
-        p10 = float(MODEL['quantile_10'].predict(features_df)[0])
-        p90 = float(MODEL['quantile_90'].predict(features_df)[0])
-        dynamic_sigma = (p90 - p10) / 2.563
+        dynamic_sigma = float(residual_dist.scale[0])
         dynamic_sigma = max(dynamic_sigma, 1e-5)
         
         p_cdf = float(norm.cdf(predicted_spread / dynamic_sigma))
@@ -859,7 +1126,11 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
         
         # Apply Stage 2 calibrator
         if 'stage2_calibrator' in MODEL and MODEL['stage2_calibrator'] is not None:
-            home_win_prob = float(MODEL['stage2_calibrator'].predict([home_win_prob])[0])
+            cal = MODEL['stage2_calibrator']
+            if hasattr(cal, 'predict_proba'):
+                home_win_prob = float(cal.predict_proba([[home_win_prob]])[0, 1])
+            else:
+                home_win_prob = float(cal.predict([[home_win_prob]])[0])
     else:
         features_list = METADATA['baseline_features']
         features_df = pd.DataFrame([feature_dict])[features_list]
@@ -873,7 +1144,11 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
         
         # Apply Stage 1 calibrator
         if 'stage1_calibrator' in MODEL and MODEL['stage1_calibrator'] is not None:
-            home_win_prob = float(MODEL['stage1_calibrator'].predict([home_win_prob])[0])
+            cal = MODEL['stage1_calibrator']
+            if hasattr(cal, 'predict_proba'):
+                home_win_prob = float(cal.predict_proba([[home_win_prob]])[0, 1])
+            else:
+                home_win_prob = float(cal.predict([[home_win_prob]])[0])
             
     # Predict totals and over/under probabilities
     # Compute s1_total_pred first using baseline features (which are in feature_dict)
@@ -893,20 +1168,23 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
         t_features_list = TOTAL_METADATA['full_features']
         t_features_df = pd.DataFrame([feature_dict])[t_features_list]
         
-        t_residual_pred = float(TOTAL_MODEL['stage2_regressor'].predict(t_features_df)[0])
+        t_residual_dist = TOTAL_MODEL['stage2_regressor'].pred_dist(t_features_df)
+        t_residual_pred = float(t_residual_dist.mean()[0])
         predicted_total = over_under + t_residual_pred
         
-        t_p10 = float(TOTAL_MODEL['quantile_10'].predict(t_features_df)[0])
-        t_p90 = float(TOTAL_MODEL['quantile_90'].predict(t_features_df)[0])
-        t_dynamic_sigma = (t_p90 - t_p10) / 2.563
+        t_dynamic_sigma = float(t_residual_dist.std()[0])
         t_dynamic_sigma = max(t_dynamic_sigma, 1e-5)
         
-        t_p_cdf = float(norm.cdf(t_residual_pred / t_dynamic_sigma))
+        t_p_cdf = float(1.0 - t_residual_dist.cdf(np.zeros(1))[0])
         t_p_clf = float(TOTAL_MODEL['stage2_classifier'].predict_proba(t_features_df)[0, 1])
         over_win_prob = 0.5 * t_p_cdf + 0.5 * t_p_clf
         
         if 'stage2_calibrator' in TOTAL_MODEL and TOTAL_MODEL['stage2_calibrator'] is not None:
-            over_win_prob = float(TOTAL_MODEL['stage2_calibrator'].predict([over_win_prob])[0])
+            cal = TOTAL_MODEL['stage2_calibrator']
+            if hasattr(cal, 'predict_proba'):
+                over_win_prob = float(cal.predict_proba([[over_win_prob]])[0, 1])
+            else:
+                over_win_prob = float(cal.predict([[over_win_prob]])[0])
     else:
         predicted_total = s1_total_pred
         t_dynamic_sigma = TOTAL_METADATA.get('sigma_residuals', 12.0)
@@ -917,11 +1195,40 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
         over_win_prob = 0.5 * t_p_cdf + 0.5 * t_p_clf
         
         if 'stage1_calibrator' in TOTAL_MODEL and TOTAL_MODEL['stage1_calibrator'] is not None:
-            over_win_prob = float(TOTAL_MODEL['stage1_calibrator'].predict([over_win_prob])[0])
+            cal = TOTAL_MODEL['stage1_calibrator']
+            if hasattr(cal, 'predict_proba'):
+                over_win_prob = float(cal.predict_proba([[over_win_prob]])[0, 1])
+            else:
+                over_win_prob = float(cal.predict([[over_win_prob]])[0])
             
     under_win_prob = 1.0 - over_win_prob
             
     away_win_prob = 1.0 - home_win_prob
+    
+    # Calculate explainability attributions (local sensitivity / perturbation SHAP)
+    categories = {
+        'Team Strength': 'team_strength',
+        'Travel & Fatigue': 'travel_fatigue',
+        'Squad Injuries': 'injuries',
+        'Referee Bias': 'referee',
+        'Rest & Schedule': 'rest_schedule'
+    }
+    
+    spread_explain = {}
+    total_explain = {}
+    
+    base_spread_val, base_total_val = _make_prediction_from_features(feature_dict, fd_match)
+    
+    # We define attributions relative to Home Margin (-predicted_spread) and predicted_total
+    home_margin_base = -base_spread_val
+    
+    for label, cat_key in categories.items():
+        perturbed_dict = get_perturbed_dict(feature_dict, cat_key, away_fatigue)
+        perturbed_spread, perturbed_total = _make_prediction_from_features(perturbed_dict, fd_match)
+        
+        perturbed_home_margin = -perturbed_spread
+        spread_explain[label] = round(home_margin_base - perturbed_home_margin, 2)
+        total_explain[label] = round(base_total_val - perturbed_total, 2)
     
     return {
         'predicted_spread': round(predicted_spread, 2),
@@ -948,6 +1255,10 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
             'net_rating_diff_10': round(home_net_10 - away_net_10, 2),
             'rest_diff': rest_diff,
             'h2h_bias': round(h2h_bias * 100, 1)
+        },
+        'explainability': {
+            'spread': spread_explain,
+            'total': total_explain
         }
     }
 
@@ -1250,12 +1561,101 @@ def confirm_bet():
                     ) VALUES (?, ?, ?, -1, -1, ?, ?, ?, 1)
                 """, (match_date, home_full, away_full, custom_home_odds, custom_away_odds, custom_over_under))
             
+        # Update polymarket_odds with custom prediction market prices if they are provided
+        custom_poly_home_price = data.get('custom_poly_home_price')
+        custom_poly_away_price = data.get('custom_poly_away_price')
+        
+        if custom_poly_home_price is not None or custom_poly_away_price is not None:
+            cursor.execute("""
+                SELECT id, home_yes_price, away_yes_price FROM polymarket_odds 
+                WHERE match_date = ? AND home_team = ? AND away_team = ?
+            """, (match_date, home_abbr, away_abbr))
+            poly_row = cursor.fetchone()
+            
+            try:
+                new_poly_home = float(custom_poly_home_price) if custom_poly_home_price is not None else (poly_row[1] if poly_row else 0.5)
+                new_poly_away = float(custom_poly_away_price) if custom_poly_away_price is not None else (poly_row[2] if poly_row else 0.5)
+                
+                if poly_row:
+                    cursor.execute("""
+                        UPDATE polymarket_odds
+                        SET home_yes_price = ?, away_yes_price = ?, last_updated = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    """, (new_poly_home, new_poly_away, poly_row[0]))
+                else:
+                    cursor.execute("""
+                        INSERT INTO polymarket_odds (
+                            match_date, home_team, away_team, home_yes_price, away_yes_price, polymarket_volume
+                        ) VALUES (?, ?, ?, ?, ?, 0.0)
+                    """, (match_date, home_abbr, away_abbr, new_poly_home, new_poly_away))
+            except Exception as poly_err:
+                print("Error updating polymarket_odds in confirm_bet:", poly_err)
+
         conn.commit()
         return jsonify({'message': message})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
     finally:
         conn.close()
+
+@app.route('/api/update_prediction_market_odds', methods=['POST'])
+def update_prediction_market_odds():
+    data = request.get_json() or {}
+    if not data and request.form:
+        data = request.form
+        
+    match_date = data.get('match_date')
+    home_team = data.get('home_team')
+    away_team = data.get('away_team')
+    home_yes_price = data.get('home_yes_price')
+    away_yes_price = data.get('away_yes_price')
+    
+    if not all([match_date, home_team, away_team]):
+        return jsonify({'error': 'Missing required fields: match_date, home_team, away_team'}), 400
+        
+    try:
+        home_yes_price = float(home_yes_price) if home_yes_price is not None and home_yes_price != '' else None
+        away_yes_price = float(away_yes_price) if away_yes_price is not None and away_yes_price != '' else None
+    except ValueError:
+        return jsonify({'error': 'Prices must be numeric'}), 400
+        
+    home_abbr = get_team_abbr(home_team)
+    away_abbr = get_team_abbr(away_team)
+    
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    try:
+        # Check if record exists
+        cursor.execute("""
+            SELECT id, home_yes_price, away_yes_price FROM polymarket_odds
+            WHERE match_date = ? AND home_team = ? AND away_team = ?
+        """, (match_date, home_abbr, away_abbr))
+        row = cursor.fetchone()
+        
+        if row:
+            db_id = row[0]
+            new_home = home_yes_price if home_yes_price is not None else row[1]
+            new_away = away_yes_price if away_yes_price is not None else row[2]
+            cursor.execute("""
+                UPDATE polymarket_odds
+                SET home_yes_price = ?, away_yes_price = ?, last_updated = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (new_home, new_away, db_id))
+        else:
+            new_home = home_yes_price if home_yes_price is not None else 0.5
+            new_away = away_yes_price if away_yes_price is not None else 0.5
+            cursor.execute("""
+                INSERT INTO polymarket_odds (match_date, home_team, away_team, home_yes_price, away_yes_price, polymarket_volume)
+                VALUES (?, ?, ?, ?, ?, 0.0)
+            """, (match_date, home_abbr, away_abbr, new_home, new_away))
+            
+        conn.commit()
+        return jsonify({'message': 'Prediction market odds updated successfully'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
 
 @app.route('/api/delete_bet', methods=['POST'])
 def delete_bet():

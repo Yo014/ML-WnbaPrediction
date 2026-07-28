@@ -283,11 +283,42 @@ export default function UpcomingBets() {
         [gameKey]: nextOdds
       };
 
-      if (!nextOdds.home_odds && !nextOdds.away_odds && !nextOdds.over_odds && !nextOdds.under_odds && !nextOdds.over_under) {
+      if (!nextOdds.home_odds && !nextOdds.away_odds && !nextOdds.over_odds && !nextOdds.under_odds && !nextOdds.over_under && !nextOdds.poly_home_price && !nextOdds.poly_away_price) {
         delete updated[gameKey];
       }
       return updated;
     });
+  };
+
+  const handleUpdatePredictionMarketOdds = async (bet, teamSide, val) => {
+    const gameKey = `${bet.date}_${bet.home_team_abbr}_${bet.away_team_abbr}`;
+    const custom = customOdds[gameKey] || {};
+    
+    const homeVal = teamSide === 'poly_home_price' ? val : (custom.poly_home_price || '');
+    const awayVal = teamSide === 'poly_away_price' ? val : (custom.poly_away_price || '');
+    
+    try {
+      const res = await fetch('/api/update_prediction_market_odds', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          match_date: bet.date,
+          home_team: bet.home_team_abbr,
+          away_team: bet.away_team_abbr,
+          home_yes_price: homeVal !== '' ? parseFloat(homeVal) : null,
+          away_yes_price: awayVal !== '' ? parseFloat(awayVal) : null
+        })
+      });
+      
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.error || `Status ${res.status}`);
+      }
+      
+      await fetchUpcomingBets(true);
+    } catch (err) {
+      setError(`Failed to update prediction market odds: ${err.message}`);
+    }
   };
 
   // Data and UI state
@@ -334,6 +365,9 @@ export default function UpcomingBets() {
       ? null
       : (custom?.over_under ? parseFloat(custom.over_under) : null);
 
+    const customPolyHome = custom?.poly_home_price ? parseFloat(custom.poly_home_price) : null;
+    const customPolyAway = custom?.poly_away_price ? parseFloat(custom.poly_away_price) : null;
+
     try {
       const res = await fetch('/api/confirm_bet', {
         method: 'POST',
@@ -348,7 +382,9 @@ export default function UpcomingBets() {
           odds: odds,
           custom_home_odds: customHome,
           custom_away_odds: customAway,
-          custom_over_under: customOverUnder
+          custom_over_under: customOverUnder,
+          custom_poly_home_price: customPolyHome,
+          custom_poly_away_price: customPolyAway
         })
       });
       if (!res.ok) {
@@ -356,7 +392,7 @@ export default function UpcomingBets() {
         throw new Error(errData.error || `Status ${res.status}`);
       }
       await fetchConfirmedBets();
-      await fetchUpcomingBets();
+      await fetchUpcomingBets(true);
     } catch (err) {
       setError(`Failed to confirm bet: ${err.message}`);
     }
@@ -380,7 +416,7 @@ export default function UpcomingBets() {
         throw new Error(errData.error || `Status ${res.status}`);
       }
       await fetchConfirmedBets();
-      await fetchUpcomingBets();
+      await fetchUpcomingBets(true);
     } catch (err) {
       setError(`Failed to delete bet: ${err.message}`);
     }
@@ -399,7 +435,7 @@ export default function UpcomingBets() {
         throw new Error(errData.error || `Status ${res.status}`);
       }
       await fetchConfirmedBets();
-      await fetchUpcomingBets();
+      await fetchUpcomingBets(true);
     } catch (err) {
       setError(`Failed to delete bet: ${err.message}`);
     }
@@ -440,7 +476,7 @@ export default function UpcomingBets() {
       }
       setEditingBetId(null);
       await fetchConfirmedBets();
-      await fetchUpcomingBets();
+      await fetchUpcomingBets(true);
     } catch (err) {
       setError(`Failed to save bet: ${err.message}`);
     }
@@ -491,8 +527,8 @@ export default function UpcomingBets() {
     localStorage.setItem('wnba_bankroll_adjustment', bankrollAdjustment);
   }, [bankrollAdjustment]);
 
-  const fetchUpcomingBets = async () => {
-    setLoading(true);
+  const fetchUpcomingBets = async (silent = false) => {
+    if (!silent) setLoading(true);
     setError(null);
     try {
       const res = await fetch('/api/upcoming_bets');
@@ -540,7 +576,7 @@ export default function UpcomingBets() {
       const data = await res.json();
       setBets(data);
     } catch (err) {
-      const sourceName = marketSource === 'bookie' ? 'FanDuel odds scraper' : 'live Polymarket scraper';
+      const sourceName = marketSource === 'bookie' ? 'FanDuel odds scraper' : 'live Prediction Market scraper';
       setError(`Failed to run ${sourceName}: ${err.message}`);
     } finally {
       setScraping(false);
@@ -577,6 +613,25 @@ export default function UpcomingBets() {
   const losses = resolvedBets.filter(bet => bet.outcome?.toLowerCase() === 'lost').length;
   const totalBets = resolvedBets.length;
   const winRate = totalBets > 0 ? ((wins / totalBets) * 100).toFixed(1) : '0.0';
+
+  const isTotals = (bet) => {
+    const side = (bet.recommended_side || '').trim().toUpperCase();
+    return side === 'OVER' || side === 'UNDER';
+  };
+
+  const totalsResolved = resolvedBets.filter(bet => isTotals(bet));
+  const totalsWins = totalsResolved.filter(bet => bet.outcome?.toLowerCase() === 'won').length;
+  const totalsLosses = totalsResolved.filter(bet => bet.outcome?.toLowerCase() === 'lost').length;
+  const totalsPushes = totalsResolved.filter(bet => bet.outcome?.toLowerCase() === 'push').length;
+  const totalsDecided = totalsWins + totalsLosses;
+  const totalsWinRate = totalsDecided > 0 ? ((totalsWins / totalsDecided) * 100).toFixed(1) : '0.0';
+
+  const spreadResolved = resolvedBets.filter(bet => !isTotals(bet));
+  const spreadWins = spreadResolved.filter(bet => bet.outcome?.toLowerCase() === 'won').length;
+  const spreadLosses = spreadResolved.filter(bet => bet.outcome?.toLowerCase() === 'lost').length;
+  const spreadPushes = spreadResolved.filter(bet => bet.outcome?.toLowerCase() === 'push').length;
+  const spreadDecided = spreadWins + spreadLosses;
+  const spreadWinRate = spreadDecided > 0 ? ((spreadWins / spreadDecided) * 100).toFixed(1) : '0.0';
 
   const chartHistory = React.useMemo(() => {
     const settled = confirmedBets
@@ -641,12 +696,22 @@ export default function UpcomingBets() {
         </div>
 
         <div className="metric-card">
-          <span className="metric-card-label">Tracked Record</span>
+          <span className="metric-card-label">Spread / ML Record</span>
           <span className="metric-card-value" style={{ color: 'var(--neon-indigo)' }}>
-            {wins}W - {losses}L
+            {spreadWins}W - {spreadLosses}L
           </span>
           <span className="metric-card-sub">
-            Win Rate: {winRate}% ({totalBets} settled)
+            Win Rate: {spreadWinRate}% ({spreadDecided} settled{spreadPushes > 0 ? `, ${spreadPushes} P` : ''})
+          </span>
+        </div>
+
+        <div className="metric-card">
+          <span className="metric-card-label">Over / Under Record</span>
+          <span className="metric-card-value" style={{ color: 'var(--neon-purple)' }}>
+            {totalsWins}W - {totalsLosses}L
+          </span>
+          <span className="metric-card-sub">
+            Win Rate: {totalsWinRate}% ({totalsDecided} settled{totalsPushes > 0 ? `, ${totalsPushes} P` : ''})
           </span>
         </div>
       </div>
@@ -741,7 +806,7 @@ export default function UpcomingBets() {
               disabled={loading || scraping}
               style={{ width: '100%' }}
             >
-              <option value="polymarket">Polymarket Contract Prices</option>
+              <option value="polymarket">Prediction Market Odds</option>
               <option value="bookie">Traditional Bookmaker (FanDuel / ELO)</option>
             </select>
           </div>
@@ -800,7 +865,7 @@ export default function UpcomingBets() {
               }}
               disabled={loading || scraping}
             >
-              {scraping ? 'Scraping & Predicting...' : marketSource === 'bookie' ? 'Scrape Live FanDuel Odds' : 'Scrape Live Polymarket'}
+              {scraping ? 'Scraping & Predicting...' : marketSource === 'bookie' ? 'Scrape Live FanDuel Odds' : 'Scrape Live Prediction Market'}
             </button>
           </div>
         </div>
@@ -824,7 +889,7 @@ export default function UpcomingBets() {
             No upcoming match markets found in the database.
             <br />
             <span style={{ fontSize: '0.85rem', display: 'block', marginTop: '12px' }}>
-              Click <strong>{marketSource === 'bookie' ? 'Scrape Live FanDuel Odds' : 'Scrape Live Polymarket'}</strong> above to fetch current WNBA matchups.
+              Click <strong>{marketSource === 'bookie' ? 'Scrape Live FanDuel Odds' : 'Scrape Live Prediction Market'}</strong> above to fetch current WNBA matchups.
             </span>
           </div>
         ) : (
@@ -837,7 +902,7 @@ export default function UpcomingBets() {
                   <th style={{ textAlign: 'center' }}>{bettingMode === 'spread' ? 'Model Win Prob (H/A)' : 'Model Over/Under Prob'}</th>
                   <th style={{ textAlign: 'center' }}>
                     {bettingMode === 'spread'
-                      ? (marketSource === 'polymarket' ? 'Polymarket Price (H/A)' : 'Bookmaker Odds (H/A)')
+                      ? (marketSource === 'polymarket' ? 'Prediction Market Odds (H/A)' : 'Bookmaker Odds (H/A)')
                       : 'Bookmaker Line / Odds'}
                   </th>
                   <th style={{ textAlign: 'center' }}>Recommendation</th>
@@ -876,31 +941,41 @@ export default function UpcomingBets() {
                     const homeModelProb = bet.home_prob / 100;
                     const awayModelProb = bet.away_prob / 100;
 
-                    let homeOdds = marketSource === 'polymarket'
-                      ? (bet.home_price > 0 ? 1.0 / bet.home_price : 99.0)
-                      : (bet.bookmaker ? bet.bookmaker.home_odds : 1.90);
-                    let awayOdds = marketSource === 'polymarket'
-                      ? (bet.away_price > 0 ? 1.0 / bet.away_price : 99.0)
-                      : (bet.bookmaker ? bet.bookmaker.away_odds : 1.90);
-
-                    if (marketSource === 'bookie' && custom) {
-                      if (custom.home_odds) {
-                        const parsed = parseFloat(custom.home_odds);
-                        if (!isNaN(parsed) && parsed > 0) homeOdds = parsed;
-                      }
-                      if (custom.away_odds) {
-                        const parsed = parseFloat(custom.away_odds);
-                        if (!isNaN(parsed) && parsed > 0) awayOdds = parsed;
-                      }
-                    }
-
+                    let homeOdds = 1.90;
+                    let awayOdds = 1.90;
                     let homeMarketProb = 0.5;
                     let awayMarketProb = 0.5;
 
                     if (marketSource === 'polymarket') {
-                      homeMarketProb = bet.home_price;
-                      awayMarketProb = bet.away_price;
+                      let homePrice = bet.home_price;
+                      let awayPrice = bet.away_price;
+                      if (custom) {
+                        if (custom.poly_home_price) {
+                          const parsed = parseFloat(custom.poly_home_price);
+                          if (!isNaN(parsed) && parsed > 0) homePrice = parsed;
+                        }
+                        if (custom.poly_away_price) {
+                          const parsed = parseFloat(custom.poly_away_price);
+                          if (!isNaN(parsed) && parsed > 0) awayPrice = parsed;
+                        }
+                      }
+                      homeMarketProb = homePrice;
+                      awayMarketProb = awayPrice;
+                      homeOdds = homePrice > 0 ? 1.0 / homePrice : 99.0;
+                      awayOdds = awayPrice > 0 ? 1.0 / awayPrice : 99.0;
                     } else {
+                      homeOdds = bet.bookmaker ? bet.bookmaker.home_odds : 1.90;
+                      awayOdds = bet.bookmaker ? bet.bookmaker.away_odds : 1.90;
+                      if (custom) {
+                        if (custom.home_odds) {
+                          const parsed = parseFloat(custom.home_odds);
+                          if (!isNaN(parsed) && parsed > 0) homeOdds = parsed;
+                        }
+                        if (custom.away_odds) {
+                          const parsed = parseFloat(custom.away_odds);
+                          if (!isNaN(parsed) && parsed > 0) awayOdds = parsed;
+                        }
+                      }
                       const hasCustom = custom && (
                         (custom.home_odds && !isNaN(parseFloat(custom.home_odds))) ||
                         (custom.away_odds && !isNaN(parseFloat(custom.away_odds)))
@@ -965,8 +1040,11 @@ export default function UpcomingBets() {
                       }
                     }
                     
-                    const overMarketProb = 1.0 / overOdds;
-                    const underMarketProb = 1.0 / underOdds;
+                    const rawOverProb = 1.0 / overOdds;
+                    const rawUnderProb = 1.0 / underOdds;
+                    const sumTotalsProb = rawOverProb + rawUnderProb;
+                    const overMarketProb = sumTotalsProb > 0 ? rawOverProb / sumTotalsProb : 0.5;
+                    const underMarketProb = sumTotalsProb > 0 ? rawUnderProb / sumTotalsProb : 0.5;
                     
                     overEdge = overModelProb - overMarketProb;
                     underEdge = underModelProb - underMarketProb;
@@ -1048,11 +1126,87 @@ export default function UpcomingBets() {
                         <td style={{ textAlign: 'center' }}>
                           {bettingMode === 'spread' ? (
                             marketSource === 'polymarket' ? (
-                              <>
-                                <span>${bet.home_price.toFixed(2)}</span>
-                                <span style={{ margin: '0 6px', color: 'var(--color-text-dim)' }}>/</span>
-                                <span>${bet.away_price.toFixed(2)}</span>
-                              </>
+                              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                  <span style={{ fontSize: '0.8rem', color: 'var(--color-text-dim)' }}>$</span>
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    min="0.01"
+                                    max="0.99"
+                                    placeholder={bet.home_price ? bet.home_price.toFixed(2) : '0.50'}
+                                    value={customOdds[gameKey]?.poly_home_price || ''}
+                                    onChange={(e) => handleCustomOddsChange(gameKey, 'poly_home_price', e.target.value)}
+                                    onBlur={(e) => handleUpdatePredictionMarketOdds(bet, 'poly_home_price', e.target.value)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') {
+                                        handleUpdatePredictionMarketOdds(bet, 'poly_home_price', e.target.value);
+                                        e.target.blur();
+                                      }
+                                    }}
+                                    style={{
+                                      width: '64px',
+                                      background: 'rgba(255, 255, 255, 0.05)',
+                                      border: '1px solid var(--border-card)',
+                                      color: 'var(--color-text-main)',
+                                      borderRadius: '6px',
+                                      padding: '4px 6px',
+                                      fontSize: '0.8rem',
+                                      textAlign: 'center',
+                                      outline: 'none',
+                                      transition: 'border-color 0.2s'
+                                    }}
+                                  />
+                                  <span style={{ color: 'var(--color-text-dim)' }}>/</span>
+                                  <span style={{ fontSize: '0.8rem', color: 'var(--color-text-dim)' }}>$</span>
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    min="0.01"
+                                    max="0.99"
+                                    placeholder={bet.away_price ? bet.away_price.toFixed(2) : '0.50'}
+                                    value={customOdds[gameKey]?.poly_away_price || ''}
+                                    onChange={(e) => handleCustomOddsChange(gameKey, 'poly_away_price', e.target.value)}
+                                    onBlur={(e) => handleUpdatePredictionMarketOdds(bet, 'poly_away_price', e.target.value)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') {
+                                        handleUpdatePredictionMarketOdds(bet, 'poly_away_price', e.target.value);
+                                        e.target.blur();
+                                      }
+                                    }}
+                                    style={{
+                                      width: '64px',
+                                      background: 'rgba(255, 255, 255, 0.05)',
+                                      border: '1px solid var(--border-card)',
+                                      color: 'var(--color-text-main)',
+                                      borderRadius: '6px',
+                                      padding: '4px 6px',
+                                      fontSize: '0.8rem',
+                                      textAlign: 'center',
+                                      outline: 'none',
+                                      transition: 'border-color 0.2s'
+                                    }}
+                                  />
+                                </div>
+                                <span style={{
+                                  background: customOdds[gameKey]?.poly_home_price || customOdds[gameKey]?.poly_away_price
+                                    ? 'rgba(245, 158, 11, 0.15)'
+                                    : 'rgba(99, 102, 241, 0.15)',
+                                  border: customOdds[gameKey]?.poly_home_price || customOdds[gameKey]?.poly_away_price
+                                    ? '1px solid var(--neon-amber)'
+                                    : '1px solid var(--neon-indigo)',
+                                  color: customOdds[gameKey]?.poly_home_price || customOdds[gameKey]?.poly_away_price
+                                    ? 'var(--neon-amber)'
+                                    : 'var(--neon-indigo)',
+                                  padding: '2px 6px',
+                                  borderRadius: '4px',
+                                  fontSize: '0.65rem',
+                                  fontWeight: '600',
+                                  display: 'inline-block'
+                                }}>
+                                  {customOdds[gameKey]?.poly_home_price || customOdds[gameKey]?.poly_away_price ? '[Prediction - Custom]' : '[Prediction Market]'}
+                                </span>
+                              </div>
                             ) : (
                               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -1508,8 +1662,12 @@ export default function UpcomingBets() {
                                     <span className="health-metric-value" style={{ fontSize: '0.85rem' }}>{(bet.home_health?.Missing_Usage_Pct ?? 0).toFixed(1)}%</span>
                                   </div>
                                   <div className="health-metric-box" style={{ flex: '1 1 70px', padding: '6px 10px', background: 'rgba(255, 255, 255, 0.02)', borderRadius: '8px' }}>
-                                    <span className="health-metric-label" style={{ fontSize: '0.65rem' }}>Missing BPM</span>
-                                    <span className="health-metric-value" style={{ fontSize: '0.85rem' }}>{(bet.home_health?.Missing_BPM_Pct ?? 0).toFixed(1)}</span>
+                                    <span className="health-metric-label" style={{ fontSize: '0.65rem' }}>Missing NET</span>
+                                    <span className="health-metric-value" style={{ fontSize: '0.85rem' }}>{(bet.home_health?.Missing_Net_Rating ?? bet.home_health?.Missing_Net_Rating_Pct ?? bet.home_health?.Missing_NET_Pct ?? bet.home_health?.Missing_BPM_Pct ?? 0).toFixed(1)}</span>
+                                  </div>
+                                  <div className="health-metric-box" style={{ flex: '1 1 70px', padding: '6px 10px', background: 'rgba(255, 255, 255, 0.02)', borderRadius: '8px' }}>
+                                    <span className="health-metric-label" style={{ fontSize: '0.65rem' }}>Missing PIE</span>
+                                    <span className="health-metric-value" style={{ fontSize: '0.85rem' }}>{(bet.home_health?.Missing_PIE ?? bet.home_health?.Missing_PIE_Pct ?? 0).toFixed(1)}%</span>
                                   </div>
                                   <div className="health-metric-box" style={{ flex: '1 1 70px', padding: '6px 10px', background: 'rgba(255, 255, 255, 0.02)', borderRadius: '8px' }}>
                                     <span className="health-metric-label" style={{ fontSize: '0.65rem' }}>Missing Min%</span>
@@ -1557,8 +1715,12 @@ export default function UpcomingBets() {
                                     <span className="health-metric-value" style={{ fontSize: '0.85rem' }}>{(bet.away_health?.Missing_Usage_Pct ?? 0).toFixed(1)}%</span>
                                   </div>
                                   <div className="health-metric-box" style={{ flex: '1 1 70px', padding: '6px 10px', background: 'rgba(255, 255, 255, 0.02)', borderRadius: '8px' }}>
-                                    <span className="health-metric-label" style={{ fontSize: '0.65rem' }}>Missing BPM</span>
-                                    <span className="health-metric-value" style={{ fontSize: '0.85rem' }}>{(bet.away_health?.Missing_BPM_Pct ?? 0).toFixed(1)}</span>
+                                    <span className="health-metric-label" style={{ fontSize: '0.65rem' }}>Missing NET</span>
+                                    <span className="health-metric-value" style={{ fontSize: '0.85rem' }}>{(bet.away_health?.Missing_Net_Rating ?? bet.away_health?.Missing_Net_Rating_Pct ?? bet.away_health?.Missing_NET_Pct ?? bet.away_health?.Missing_BPM_Pct ?? 0).toFixed(1)}</span>
+                                  </div>
+                                  <div className="health-metric-box" style={{ flex: '1 1 70px', padding: '6px 10px', background: 'rgba(255, 255, 255, 0.02)', borderRadius: '8px' }}>
+                                    <span className="health-metric-label" style={{ fontSize: '0.65rem' }}>Missing PIE</span>
+                                    <span className="health-metric-value" style={{ fontSize: '0.85rem' }}>{(bet.away_health?.Missing_PIE ?? bet.away_health?.Missing_PIE_Pct ?? 0).toFixed(1)}%</span>
                                   </div>
                                   <div className="health-metric-box" style={{ flex: '1 1 70px', padding: '6px 10px', background: 'rgba(255, 255, 255, 0.02)', borderRadius: '8px' }}>
                                     <span className="health-metric-label" style={{ fontSize: '0.65rem' }}>Missing Min%</span>
@@ -1600,6 +1762,53 @@ export default function UpcomingBets() {
           <span className="badge" style={{ background: 'rgba(99, 102, 241, 0.15)', borderColor: 'var(--neon-indigo)', color: 'var(--neon-indigo)' }}>
             {confirmedBets.length} Tracked Bets
           </span>
+        </div>
+
+        <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', padding: '0 4px', marginBottom: '16px' }}>
+          <div style={{
+            background: 'rgba(255, 255, 255, 0.03)',
+            border: '1px solid var(--border-card)',
+            borderRadius: '8px',
+            padding: '8px 14px',
+            fontSize: '0.8rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px'
+          }}>
+            <span style={{ color: 'var(--color-text-dim)' }}>Spread / ML:</span>
+            <span style={{ fontWeight: '700', color: 'var(--neon-indigo)' }}>{spreadWins}W - {spreadLosses}L</span>
+            <span style={{ color: 'var(--neon-emerald)', fontWeight: '600' }}>({spreadWinRate}%)</span>
+          </div>
+
+          <div style={{
+            background: 'rgba(255, 255, 255, 0.03)',
+            border: '1px solid var(--border-card)',
+            borderRadius: '8px',
+            padding: '8px 14px',
+            fontSize: '0.8rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px'
+          }}>
+            <span style={{ color: 'var(--color-text-dim)' }}>Over / Under:</span>
+            <span style={{ fontWeight: '700', color: 'var(--neon-purple)' }}>{totalsWins}W - {totalsLosses}L</span>
+            <span style={{ color: 'var(--neon-emerald)', fontWeight: '600' }}>({totalsWinRate}%)</span>
+          </div>
+
+          <div style={{
+            background: 'rgba(255, 255, 255, 0.03)',
+            border: '1px solid var(--border-card)',
+            borderRadius: '8px',
+            padding: '8px 14px',
+            fontSize: '0.8rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px'
+          }}>
+            <span style={{ color: 'var(--color-text-dim)' }}>Combined Total:</span>
+            <span style={{ fontWeight: '700', color: 'var(--color-text-main)' }}>{wins}W - {losses}L</span>
+            <span style={{ color: 'var(--neon-emerald)', fontWeight: '600' }}>({winRate}%)</span>
+          </div>
         </div>
 
         {confirmedBets.length === 0 ? (

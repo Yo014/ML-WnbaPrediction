@@ -341,7 +341,7 @@ export default function SimulationBacktester() {
               disabled={loading}
             >
               <option value="bookie">Traditional Bookmakers</option>
-              <option value="polymarket">Polymarket YES Contract Price</option>
+              <option value="polymarket">Prediction Market YES Contract Price</option>
             </select>
           </div>
 
@@ -693,7 +693,7 @@ export default function SimulationBacktester() {
                 {metrics.polymarket.accuracy && (
                   <div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '2px' }}>
-                      <span>Polymarket Consensus</span>
+                      <span>Prediction Market Consensus</span>
                       <span style={{ fontWeight: '700', color: 'var(--neon-emerald)' }}>{metrics.polymarket.accuracy}%</span>
                     </div>
                     <div className="meter-track"><div className="meter-fill" style={{ width: `${metrics.polymarket.accuracy}%`, background: 'var(--neon-emerald)' }}></div></div>
@@ -723,7 +723,7 @@ export default function SimulationBacktester() {
                 {metrics.polymarket.brier_score && (
                   <div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '2px' }}>
-                      <span>Polymarket</span>
+                      <span>Prediction Market</span>
                       <span style={{ fontWeight: '700', color: 'var(--neon-emerald)' }}>{metrics.polymarket.brier_score}</span>
                     </div>
                     <div className="meter-track"><div className="meter-fill" style={{ width: `${(1 - metrics.polymarket.brier_score) * 100}%`, background: 'var(--neon-emerald)' }}></div></div>
@@ -753,7 +753,7 @@ export default function SimulationBacktester() {
                 {metrics.polymarket.log_loss && (
                   <div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '2px' }}>
-                      <span>Polymarket</span>
+                      <span>Prediction Market</span>
                       <span style={{ fontWeight: '700', color: 'var(--neon-emerald)' }}>{metrics.polymarket.log_loss}</span>
                     </div>
                     <div className="meter-track"><div className="meter-fill" style={{ width: `${Math.max(10, (1.2 - metrics.polymarket.log_loss) * 80)}%`, background: 'var(--neon-emerald)' }}></div></div>

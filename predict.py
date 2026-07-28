@@ -96,14 +96,12 @@ def predict_spread_and_win_prob(model, metadata, features_df):
         # Select only the saved features list before predicting with base models
         X_full = df_stage2[full_feats]
         
-        # Regressor predicts the residual
-        residual_pred = model['stage2_regressor'].predict(X_full)
+        # Regressor predicts the residual and dynamic volatility using NGBRegressor
+        stage2_dist = model['stage2_regressor'].pred_dist(X_full)
+        residual_pred = stage2_dist.loc
         mu_pred = df_stage2['ClosingSpread'].values + residual_pred
         
-        # Quantiles
-        p10 = model['quantile_10'].predict(X_full)
-        p90 = model['quantile_90'].predict(X_full)
-        sigma_pred = (p90 - p10) / 2.563
+        sigma_pred = stage2_dist.scale
         # Avoid division by zero or negative sigma
         sigma_pred = np.maximum(sigma_pred, 1e-5)
         
@@ -253,14 +251,12 @@ def predict_total_and_over_prob(model, metadata, features_df):
         # Select only the saved features list before predicting with base models
         X_full = df_stage2[full_feats]
         
-        # Regressor predicts the residual
-        residual_pred = model['stage2_regressor'].predict(X_full)
+        # Regressor predicts the residual and dynamic volatility using NGBRegressor
+        stage2_dist = model['stage2_regressor'].pred_dist(X_full)
+        residual_pred = stage2_dist.loc
         mu_pred = df_stage2['OverUnder'].values + residual_pred
         
-        # Quantiles
-        p10 = model['quantile_10'].predict(X_full)
-        p90 = model['quantile_90'].predict(X_full)
-        sigma_pred = (p90 - p10) / 2.563
+        sigma_pred = stage2_dist.scale
         sigma_pred = np.maximum(sigma_pred, 1e-5)
         
         # CDF probability (probability of residual > 0, i.e., total score > OverUnder)
@@ -274,7 +270,11 @@ def predict_total_and_over_prob(model, metadata, features_df):
         
         # Run final win probabilities through corresponding Platt/Isotonic calibrator
         if 'stage2_calibrator' in model and model['stage2_calibrator'] is not None:
-            p_calibrated = model['stage2_calibrator'].predict(p_blend)
+            calibrator = model['stage2_calibrator']
+            if hasattr(calibrator, 'predict_proba'):
+                p_calibrated = calibrator.predict_proba(p_blend.reshape(-1, 1))[:, 1]
+            else:
+                p_calibrated = calibrator.predict(p_blend)
         else:
             p_calibrated = p_blend
         
@@ -313,7 +313,11 @@ def predict_total_and_over_prob(model, metadata, features_df):
         
         # Run final win probabilities through corresponding Platt/Isotonic calibrator
         if 'stage1_calibrator' in model and model['stage1_calibrator'] is not None:
-            p_calibrated = model['stage1_calibrator'].predict(p_blend)
+            calibrator = model['stage1_calibrator']
+            if hasattr(calibrator, 'predict_proba'):
+                p_calibrated = calibrator.predict_proba(p_blend.reshape(-1, 1))[:, 1]
+            else:
+                p_calibrated = calibrator.predict(p_blend)
         else:
             p_calibrated = p_blend
         

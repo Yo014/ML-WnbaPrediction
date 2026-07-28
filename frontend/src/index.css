@@ -214,6 +214,34 @@ h1 span.badge {
   background: radial-gradient(circle at top right, rgba(99, 102, 241, 0.08) 0%, transparent 60%), var(--bg-card);
 }
 
+.hero-predictions-grid {
+  display: grid;
+  grid-template-columns: 1fr 1px 1fr;
+  gap: 32px;
+  align-items: stretch;
+}
+
+@media (max-width: 768px) {
+  .hero-predictions-grid {
+    grid-template-columns: 1fr;
+    gap: 32px;
+  }
+  .hero-divider {
+    display: none;
+  }
+}
+
+.hero-prediction-col {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.hero-divider {
+  width: 1px;
+  background: linear-gradient(to bottom, transparent, var(--border-card), transparent);
+}
+
 .predicted-spread-value {
   font-size: 3.5rem;
   font-weight: 800;
@@ -230,6 +258,14 @@ h1 span.badge {
   font-weight: 500;
   color: var(--color-text-muted);
   margin-bottom: 24px;
+}
+
+/* Probability gauge progress bar */
+.prob-bar-fill-total {
+  height: 100%;
+  width: 50%;
+  background: linear-gradient(to right, var(--neon-indigo), var(--neon-amber));
+  transition: width 0.6s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 /* Probability gauge progress bar */
@@ -569,12 +605,14 @@ h1 span.badge {
   color: var(--color-text-muted);
 }
 
+.player-stats-pill.positive-net,
 .player-stats-pill.positive-bpm {
   color: var(--neon-emerald);
   background: rgba(16, 185, 129, 0.05);
   border-color: rgba(16, 185, 129, 0.1);
 }
 
+.player-stats-pill.negative-net,
 .player-stats-pill.negative-bpm {
   color: var(--neon-rose);
   background: rgba(244, 63, 94, 0.05);
@@ -839,4 +877,96 @@ h1 span.badge {
 .checkbox-indigo:disabled::before {
   background-color: var(--color-text-dim);
   box-shadow: none;
+}
+
+/* Kelly Calculator Card Styles */
+.kelly-calculator-card {
+  margin-top: 24px;
+}
+
+.kelly-results-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 12px;
+}
+
+@media (max-width: 640px) {
+  .kelly-results-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.kelly-recommendation-box {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.kelly-box-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.kelly-market-type {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+}
+
+.kelly-pick-badge {
+  font-size: 0.8rem;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--color-text-muted);
+}
+
+.kelly-pick-badge.active {
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--neon-emerald);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.kelly-wager-details {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.kelly-wager-amount {
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: #fff;
+  letter-spacing: -0.02em;
+}
+
+.kelly-wager-pct {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--color-text-muted);
+  margin-left: 6px;
+}
+
+.kelly-stat-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.8rem;
+  color: #cbd5e1;
+}
+
+.kelly-no-bet {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  font-style: italic;
+  padding: 10px 0 4px;
 }

@@ -9,7 +9,8 @@ export default function RosterCard({
   onToggleInjury
 }) {
   const missingUsg = health?.Missing_Usage_Pct ?? 0.0;
-  const missingBpm = health?.Missing_BPM_Pct ?? 0.0;
+  const missingNet = health?.Missing_Net_Rating ?? health?.Missing_Net_Rating_Pct ?? health?.Missing_NET_Pct ?? health?.Missing_BPM_Pct ?? 0.0;
+  const missingPie = health?.Missing_PIE ?? health?.Missing_PIE_Pct ?? 0.0;
   const missingMin = health?.Missing_Minutes_Pct ?? 0.0;
   const injuredCount = health?.Injured_Players_Count ?? 0;
 
@@ -33,8 +34,12 @@ export default function RosterCard({
           <span className="health-metric-value">{missingUsg.toFixed(1)}%</span>
         </div>
         <div className="health-metric-box">
-          <span className="health-metric-label">Missing BPM</span>
-          <span className="health-metric-value">{missingBpm.toFixed(1)}</span>
+          <span className="health-metric-label">Missing NET</span>
+          <span className="health-metric-value">{missingNet.toFixed(1)}</span>
+        </div>
+        <div className="health-metric-box">
+          <span className="health-metric-label">Missing PIE</span>
+          <span className="health-metric-value">{missingPie.toFixed(1)}%</span>
         </div>
         <div className="health-metric-box">
           <span className="health-metric-label">Missing Min%</span>

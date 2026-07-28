@@ -141,6 +141,43 @@ def main():
     # Parse Date and add Season
     df_matches['Season'] = df_matches['Date'].str[:4].astype(int)
     
+    # Calculate ELO before matches chronologically
+    print("Calculating chronological team ELO ratings...")
+    elo_ratings = {}
+    def get_elo(team):
+        if team not in elo_ratings:
+            elo_ratings[team] = 1500.0
+        return elo_ratings[team]
+        
+    df_matches_sorted = df_matches.sort_values('Date').copy()
+    home_elos_before = []
+    away_elos_before = []
+    current_season = None
+    
+    for idx, row in df_matches_sorted.iterrows():
+        season = row['Season']
+        if current_season is not None and season != current_season:
+            for t in elo_ratings:
+                elo_ratings[t] = 0.75 * elo_ratings[t] + 0.25 * 1500.0
+        current_season = season
+        
+        r_home = get_elo(row['HomeTeam'])
+        r_away = get_elo(row['AwayTeam'])
+        home_elos_before.append(r_home)
+        away_elos_before.append(r_away)
+        
+        # Update ELO
+        expected_home = 1.0 / (1.0 + 10.0 ** ((r_away - r_home - 50.0) / 400.0))
+        actual_home = 1.0 if row['HomeScore'] > row['AwayScore'] else 0.0
+        if row['HomeScore'] == row['AwayScore']:
+            actual_home = 0.5
+        elo_ratings[row['HomeTeam']] = r_home + 20 * (actual_home - expected_home)
+        elo_ratings[row['AwayTeam']] = r_away + 20 * ((1.0 - actual_home) - (1.0 - expected_home))
+        
+    df_matches_sorted['Home_Elo_Before'] = home_elos_before
+    df_matches_sorted['Away_Elo_Before'] = away_elos_before
+    df_matches = df_matches_sorted.sort_index()
+
     # 1. Melt matches to team games long format
     print("Constructing team-game long format for rolling calculations...")
     team_games = []
@@ -166,7 +203,8 @@ def main():
             'DREB': row['HomeDREB'],
             'PF': row['HomePF'],
             'MIN': row['HomeMIN'],
-            'Opp_DREB': row['AwayDREB']
+            'Opp_DREB': row['AwayDREB'],
+            'Elo_Before_Game': row['Home_Elo_Before']
         })
         # Away team record
         team_games.append({
@@ -189,7 +227,8 @@ def main():
             'DREB': row['AwayDREB'],
             'PF': row['AwayPF'],
             'MIN': row['AwayMIN'],
-            'Opp_DREB': row['HomeDREB']
+            'Opp_DREB': row['HomeDREB'],
+            'Elo_Before_Game': row['Away_Elo_Before']
         })
     df_team_games = pd.DataFrame(team_games)
     
@@ -269,12 +308,16 @@ def main():
                         # 2018: use chronological mean prior to team's first game of the season
                         EMA_start = chrono_team_means.loc[team_season_df.index[0], col]
                         
-                    # Determine prior value based on column and Talent_Floor_Change
+                    # Determine ELO prior adjustment
+                    elo_start = team_season_df.iloc[0]['Elo_Before_Game']
+                    elo_offset = (elo_start - 1500.0) / 50.0
+                    
+                    # Determine prior value based on column, ELO, and Talent_Floor_Change
                     tf_change = tf_change_dict.get((T, S), 0.0)
                     if col == 'Offensive_Rating':
-                        Prior = EMA_start + 0.15 * tf_change
+                        Prior = EMA_start + elo_offset + 0.15 * tf_change
                     elif col == 'Defensive_Rating':
-                        Prior = EMA_start - 0.15 * tf_change
+                        Prior = EMA_start - elo_offset - 0.15 * tf_change
                     elif col == 'eFG%':
                         Prior = EMA_start + 0.0005 * tf_change
                     elif col == 'TOV%':
@@ -312,6 +355,58 @@ def main():
                     carry_over_blended = (1.0 - W_final) * Prior + W_final * ewm_series.iloc[-1]
                     prev_season_final_ema[(span, col, T)] = carry_over_blended
             
+    # Define WNBA team coordinates and timezones
+    TEAM_COORDINATES = {
+        "Atlanta Dream": (33.7490, -84.3880),
+        "Chicago Sky": (41.8781, -87.6298),
+        "Connecticut Sun": (41.4871, -72.0784),
+        "Dallas Wings": (32.7357, -97.1081),
+        "Golden State Valkyries": (37.7749, -122.4194),
+        "Indiana Fever": (39.7684, -86.1581),
+        "Los Angeles Sparks": (34.0522, -118.2437),
+        "Las Vegas Aces": (36.1699, -115.1398),
+        "Minnesota Lynx": (44.9778, -93.2650),
+        "New York Liberty": (40.6782, -73.9442),
+        "Portland Fire": (45.5152, -122.6784),
+        "Phoenix Mercury": (33.4484, -112.0740),
+        "Seattle Storm": (47.6062, -122.3321),
+        "Toronto Tempo": (43.6532, -79.3832),
+        "Washington Mystics": (38.9072, -77.0369)
+    }
+
+    TEAM_TIMEZONES = {
+        "Atlanta Dream": -5.0,
+        "Chicago Sky": -6.0,
+        "Connecticut Sun": -5.0,
+        "Dallas Wings": -6.0,
+        "Golden State Valkyries": -8.0,
+        "Indiana Fever": -5.0,
+        "Los Angeles Sparks": -8.0,
+        "Las Vegas Aces": -8.0,
+        "Minnesota Lynx": -6.0,
+        "New York Liberty": -5.0,
+        "Portland Fire": -8.0,
+        "Phoenix Mercury": -7.0,
+        "Seattle Storm": -8.0,
+        "Toronto Tempo": -5.0,
+        "Washington Mystics": -5.0
+    }
+
+    def haversine_vector(lat1, lon1, lat2, lon2):
+        lat1_rad = np.radians(lat1)
+        lon1_rad = np.radians(lon1)
+        lat2_rad = np.radians(lat2)
+        lon2_rad = np.radians(lon2)
+        
+        dlat = lat2_rad - lat1_rad
+        dlon = lon2_rad - lon1_rad
+        
+        a = np.sin(dlat / 2.0)**2 + np.cos(lat1_rad) * np.cos(lat2_rad) * np.sin(dlon / 2.0)**2
+        c = 2.0 * np.arctan2(np.sqrt(a), np.sqrt(1.0 - a))
+        
+        R = 3958.8  # Earth radius in miles
+        return R * c
+
     # Compute Rest & Fatigue
     print("Computing rest & fatigue features...")
     df_team_games['Date_dt'] = pd.to_datetime(df_team_games['Date'])
@@ -323,13 +418,95 @@ def main():
     df_team_games['Three_In_Four_Days'] = df_team_games.groupby(['Team', 'Season'])['Date_dt'].diff(2).dt.days
     df_team_games['Three_In_Four'] = np.where(df_team_games['Three_In_Four_Days'] <= 3.0, 1.0, 0.0)
     
+    # Travel and Timezone Changes calculations
+    df_team_games['Game_Location'] = np.where(df_team_games['Role'] == 'Away', df_team_games['Opponent'], df_team_games['Team'])
+    lat_lons = df_team_games['Game_Location'].map(TEAM_COORDINATES)
+    df_team_games['Game_Lat'] = lat_lons.apply(lambda x: x[0] if isinstance(x, tuple) else 39.8283)
+    df_team_games['Game_Lon'] = lat_lons.apply(lambda x: x[1] if isinstance(x, tuple) else -98.5795)
+    df_team_games['Game_TZ'] = df_team_games['Game_Location'].map(TEAM_TIMEZONES).fillna(-5.0)
+
+    df_team_games['Prev_Game_Lat'] = df_team_games.groupby(['Team', 'Season'])['Game_Lat'].shift(1)
+    df_team_games['Prev_Game_Lon'] = df_team_games.groupby(['Team', 'Season'])['Game_Lon'].shift(1)
+    df_team_games['Prev_Game_TZ'] = df_team_games.groupby(['Team', 'Season'])['Game_TZ'].shift(1)
+
+    home_lat_lons = df_team_games['Team'].map(TEAM_COORDINATES)
+    default_prev_lat = home_lat_lons.apply(lambda x: x[0] if isinstance(x, tuple) else 39.8283)
+    default_prev_lon = home_lat_lons.apply(lambda x: x[1] if isinstance(x, tuple) else -98.5795)
+
+    df_team_games['Prev_Game_Lat'] = df_team_games['Prev_Game_Lat'].fillna(default_prev_lat)
+    df_team_games['Prev_Game_Lon'] = df_team_games['Prev_Game_Lon'].fillna(default_prev_lon)
+    df_team_games['Prev_Game_TZ'] = df_team_games['Prev_Game_TZ'].fillna(df_team_games['Team'].map(TEAM_TIMEZONES).fillna(-5.0))
+
+    df_team_games['Travel_Distance'] = haversine_vector(
+        df_team_games['Prev_Game_Lat'], df_team_games['Prev_Game_Lon'],
+        df_team_games['Game_Lat'], df_team_games['Game_Lon']
+    )
+    df_team_games['Timezone_Change'] = np.abs(df_team_games['Game_TZ'] - df_team_games['Prev_Game_TZ'])
+
+    # Rolling 7d Fatigue and travel calculations
+    travel_miles_7d = []
+    timezone_changes_7d = []
+    fatigue_scores = []
+    
+    for idx, row in df_team_games.iterrows():
+        current_date = row['Date_dt']
+        team = row['Team']
+        season = row['Season']
+        
+        mask = (
+            (df_team_games['Team'] == team) & 
+            (df_team_games['Season'] == season) & 
+            (df_team_games['Date_dt'] <= current_date) & 
+            (df_team_games['Date_dt'] >= current_date - pd.Timedelta(days=7))
+        )
+        recent_games = df_team_games[mask]
+        
+        tot_miles = 0.0
+        tot_tz = 0.0
+        fatigue = 0.0
+        
+        for _, g in recent_games.iterrows():
+            days_ago = (current_date - g['Date_dt']).days
+            tot_miles += g['Travel_Distance']
+            tot_tz += g['Timezone_Change']
+            fatigue += (g['Travel_Distance'] / 1000.0) / (days_ago + 1.0)
+            
+        if row['Back_To_Back'] == 1.0:
+            fatigue += 0.5
+            
+        travel_miles_7d.append(tot_miles)
+        timezone_changes_7d.append(tot_tz)
+        fatigue_scores.append(fatigue)
+        
+    df_team_games['Travel_Miles_7d'] = travel_miles_7d
+    df_team_games['Timezone_Changes_7d'] = timezone_changes_7d
+    df_team_games['Fatigue_Score'] = fatigue_scores
+
     # Split back into Home and Away subsets
     df_home_feats = df_team_games[df_team_games['Role'] == 'Home'].copy()
     df_away_feats = df_team_games[df_team_games['Role'] == 'Away'].copy()
     
     # Build columns mapping to merge back
-    home_cols = {'Match_Id': 'id', 'Days_Rest': 'Home_Days_Rest', 'Back_To_Back': 'Home_Back_To_Back', 'Three_In_Four': 'Home_Three_In_Four'}
-    away_cols = {'Match_Id': 'id', 'Days_Rest': 'Away_Days_Rest', 'Back_To_Back': 'Away_Back_To_Back', 'Three_In_Four': 'Away_Three_In_Four'}
+    home_cols = {
+        'Match_Id': 'id', 
+        'Days_Rest': 'Home_Days_Rest', 
+        'Back_To_Back': 'Home_Back_To_Back', 
+        'Three_In_Four': 'Home_Three_In_Four',
+        'Game_Number_In_Season': 'Home_Game_Number_In_Season',
+        'Travel_Miles_7d': 'Home_Travel_Miles_7d',
+        'Timezone_Changes_7d': 'Home_Timezone_Changes_7d',
+        'Fatigue_Score': 'Home_Fatigue_Score'
+    }
+    away_cols = {
+        'Match_Id': 'id', 
+        'Days_Rest': 'Away_Days_Rest', 
+        'Back_To_Back': 'Away_Back_To_Back', 
+        'Three_In_Four': 'Away_Three_In_Four',
+        'Game_Number_In_Season': 'Away_Game_Number_In_Season',
+        'Travel_Miles_7d': 'Away_Travel_Miles_7d',
+        'Timezone_Changes_7d': 'Away_Timezone_Changes_7d',
+        'Fatigue_Score': 'Away_Fatigue_Score'
+    }
     
     for span in [5, 10]:
         for col in metrics:
@@ -350,6 +527,14 @@ def main():
             df_matches[f'Home_{col}_EMA_{span}'] = df_matches[f'Home_{col}_EMA_{span}'].fillna(chrono_match_means[col])
             df_matches[f'Away_{col}_EMA_{span}'] = df_matches[f'Away_{col}_EMA_{span}'].fillna(chrono_match_means[col])
             
+    # Apply fatigue-based away ratings discount
+    print("Applying fatigue-based away ratings discount...")
+    for span in [5, 10]:
+        df_matches[f'Away_Offensive_Rating_EMA_{span}'] = df_matches[f'Away_Offensive_Rating_EMA_{span}'] * (1.0 - 0.005 * df_matches['Away_Fatigue_Score'])
+        df_matches[f'Away_Defensive_Rating_EMA_{span}'] = df_matches[f'Away_Defensive_Rating_EMA_{span}'] * (1.0 + 0.005 * df_matches['Away_Fatigue_Score'])
+        df_matches[f'Away_eFG%_EMA_{span}'] = df_matches[f'Away_eFG%_EMA_{span}'] * (1.0 - 0.005 * df_matches['Away_Fatigue_Score'])
+        df_matches[f'Away_ORB%_EMA_{span}'] = df_matches[f'Away_ORB%_EMA_{span}'] * (1.0 - 0.005 * df_matches['Away_Fatigue_Score'])
+
     # Calculate Net Ratings and Net Rating EMAs
     for span in [5, 10]:
         df_matches[f'Home_Net_Rating_EMA_{span}'] = df_matches[f'Home_Offensive_Rating_EMA_{span}'] - df_matches[f'Home_Defensive_Rating_EMA_{span}']
@@ -363,13 +548,14 @@ def main():
     df_hist_inactives = pd.read_sql_query("SELECT * FROM historical_inactives", conn)
     df_active_injuries = pd.read_sql_query("SELECT * FROM injuries", conn)
     
-    # Build dictionary for fast player stats lookup: (Player, Season) -> (MIN, USG_PCT, BPM)
+    # Build dictionary for fast player stats lookup: (Player, Season) -> (MIN, USG_PCT, NET_RATING, PIE)
     player_stats_dict = {}
     for _, row in df_players.iterrows():
         player_stats_dict[(row['Player'], int(row['Season']))] = (
             float(row['MIN']),
             float(row['USG_PCT']),
-            float(row['BPM'])
+            float(row['NET_RATING']) if row['NET_RATING'] is not None else 0.0,
+            float(row['PIE']) if row['PIE'] is not None else 0.0
         )
         
     def get_player_season_stats(player, season):
@@ -384,11 +570,11 @@ def main():
             closest_season = min(all_seasons, key=lambda x: abs(x - season))
             return player_stats_dict[(player, closest_season)]
             
-        return (0.0, 0.0, 0.0)
+        return (0.0, 0.0, 0.0, 0.0)
 
 
     # Initialize health columns
-    health_metrics = ['Missing_Usage_Pct', 'Missing_BPM_Pct', 'Missing_Minutes_Pct', 'Injured_Players_Count']
+    health_metrics = ['Missing_Usage_Pct', 'Missing_Net_Rating', 'Missing_PIE', 'Missing_Minutes_Pct', 'Injured_Players_Count']
     for col in health_metrics:
         df_matches[f'Home_{col}'] = 0.0
         df_matches[f'Away_{col}'] = 0.0
@@ -421,28 +607,32 @@ def main():
             a_inactives = df_active_injuries[df_active_injuries['Team'] == a_team]['Player'].tolist()
             
         # Home team metrics
-        h_usg, h_bpm, h_min = 0.0, 0.0, 0.0
+        h_usg, h_net_rating, h_pie, h_min = 0.0, 0.0, 0.0, 0.0
         for p in h_inactives:
-            p_min, p_usg, p_bpm = get_player_season_stats(p, h_season_for_stats)
+            p_min, p_usg, p_net_rating, p_pie = get_player_season_stats(p, h_season_for_stats)
             h_usg += p_usg * 100.0
-            h_bpm += p_bpm
+            h_net_rating += (p_min * p_net_rating)
+            h_pie += (p_min * p_pie)
             h_min += (p_min / 2.0)
             
         df_matches.loc[idx, 'Home_Missing_Usage_Pct'] = round(h_usg, 3)
-        df_matches.loc[idx, 'Home_Missing_BPM_Pct'] = round(h_bpm, 3)
+        df_matches.loc[idx, 'Home_Missing_Net_Rating'] = round(h_net_rating, 3)
+        df_matches.loc[idx, 'Home_Missing_PIE'] = round(h_pie, 3)
         df_matches.loc[idx, 'Home_Missing_Minutes_Pct'] = round(h_min, 3)
         df_matches.loc[idx, 'Home_Injured_Players_Count'] = len(h_inactives)
         
         # Away team metrics
-        a_usg, a_bpm, a_min = 0.0, 0.0, 0.0
+        a_usg, a_net_rating, a_pie, a_min = 0.0, 0.0, 0.0, 0.0
         for p in a_inactives:
-            p_min, p_usg, p_bpm = get_player_season_stats(p, a_season_for_stats)
+            p_min, p_usg, p_net_rating, p_pie = get_player_season_stats(p, a_season_for_stats)
             a_usg += p_usg * 100.0
-            a_bpm += p_bpm
+            a_net_rating += (p_min * p_net_rating)
+            a_pie += (p_min * p_pie)
             a_min += (p_min / 2.0)
             
         df_matches.loc[idx, 'Away_Missing_Usage_Pct'] = round(a_usg, 3)
-        df_matches.loc[idx, 'Away_Missing_BPM_Pct'] = round(a_bpm, 3)
+        df_matches.loc[idx, 'Away_Missing_Net_Rating'] = round(a_net_rating, 3)
+        df_matches.loc[idx, 'Away_Missing_PIE'] = round(a_pie, 3)
         df_matches.loc[idx, 'Away_Missing_Minutes_Pct'] = round(a_min, 3)
         df_matches.loc[idx, 'Away_Injured_Players_Count'] = len(a_inactives)
             
@@ -508,10 +698,21 @@ def main():
     df_matches['Rest_Diff'] = df_matches['Home_Days_Rest'] - df_matches['Away_Days_Rest']
     df_matches['Missing_Usage_Diff'] = df_matches['Home_Missing_Usage_Pct'] - df_matches['Away_Missing_Usage_Pct']
     df_matches['Talent_Floor_Diff'] = df_matches['Home_Talent_Floor'] - df_matches['Away_Talent_Floor']
+    df_matches['Travel_Miles_Diff'] = df_matches['Home_Travel_Miles_7d'] - df_matches['Away_Travel_Miles_7d']
+    df_matches['Fatigue_Score_Diff'] = df_matches['Home_Fatigue_Score'] - df_matches['Away_Fatigue_Score']
     
     # 7. Head-to-Head Bias
     print("Calculating Head-to-Head (H2H) win bias...")
     df_matches = calculate_h2h_bias(df_matches)
+    
+    # 8. Advanced Interaction Features
+    df_matches['Expected_Pace'] = (df_matches['Home_Pace_EMA_10'] * df_matches['Away_Pace_EMA_10']) / 80.0
+    df_matches['Home_Expected_Pts'] = (df_matches['Home_Offensive_Rating_EMA_10'] * df_matches['Away_Defensive_Rating_EMA_10'] / 100.0) * (df_matches['Expected_Pace'] / 100.0)
+    df_matches['Away_Expected_Pts'] = (df_matches['Away_Offensive_Rating_EMA_10'] * df_matches['Home_Defensive_Rating_EMA_10'] / 100.0) * (df_matches['Expected_Pace'] / 100.0)
+    df_matches['Expected_Game_Total'] = df_matches['Home_Expected_Pts'] + df_matches['Away_Expected_Pts']
+    df_matches['Ref_Foul_Impact'] = df_matches['Ref_Fouls_EMA'] - 38.0
+    df_matches['Ref_FreeThrow_Rate'] = df_matches['Ref_Pts_EMA'] / (df_matches['Ref_Fouls_EMA'] + 1e-5)
+    df_matches['Combined_Fatigue_Score'] = df_matches['Home_Fatigue_Score'] + df_matches['Away_Fatigue_Score']
     
     # Target variables
     df_matches['Home_Win'] = (df_matches['HomeScore'] > df_matches['AwayScore']).astype(int)

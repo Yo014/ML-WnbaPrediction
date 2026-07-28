@@ -3,7 +3,9 @@ import Header from './components/Header';
 import MatchupSelector from './components/MatchupSelector';
 import PredictionHero from './components/PredictionHero';
 import BettingOddsCard from './components/BettingOddsCard';
+import KellyCalculatorCard from './components/KellyCalculatorCard';
 import PerformanceDetailsCard from './components/PerformanceDetailsCard';
+import ExplainabilityCard from './components/ExplainabilityCard';
 import RosterCard from './components/RosterCard';
 import SimulationBacktester from './components/SimulationBacktester';
 import UpcomingBets from './components/UpcomingBets';
@@ -212,6 +214,10 @@ function App() {
               predictedSpread={predictionResult?.predicted_spread}
               homeProb={predictionResult?.home_win_probability}
               awayProb={predictionResult?.away_win_probability}
+              predictedTotal={predictionResult?.predicted_total}
+              overProb={predictionResult?.over_probability}
+              underProb={predictionResult?.under_probability}
+              overUnderLine={predictionResult?.odds?.over_under}
             />
 
             <BettingOddsCard
@@ -219,8 +225,18 @@ function App() {
               restDiff={predictionResult?.differentials?.rest_diff}
             />
 
+            <KellyCalculatorCard
+              predictionResult={predictionResult}
+              homeTeam={homeTeam}
+              awayTeam={awayTeam}
+            />
+
             <PerformanceDetailsCard
               differentials={predictionResult?.differentials}
+            />
+
+            <ExplainabilityCard
+              explainability={predictionResult?.explainability}
             />
           </div>
 

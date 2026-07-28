@@ -6,12 +6,112 @@ warnings.filterwarnings("ignore", category=ConvergenceWarning)
 
 from sklearn.base import BaseEstimator, RegressorMixin, ClassifierMixin, clone
 from sklearn.utils.validation import check_is_fitted
+from sklearn.model_selection import KFold
+from scipy.stats import norm
 from xgboost import XGBRegressor, XGBClassifier
 from lightgbm import LGBMRegressor, LGBMClassifier
 from catboost import CatBoostRegressor, CatBoostClassifier
 from sklearn.linear_model import Ridge, LogisticRegression, LassoCV
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
+
+
+class NormalDistributionPrediction:
+    """
+    Representation of a normal (Gaussian) predictive distribution with mean (loc)
+    and standard deviation (scale).
+    """
+    def __init__(self, loc, scale):
+        self.loc = np.asarray(loc) if isinstance(loc, (list, tuple, np.ndarray, pd.Series)) else loc
+        self.scale = np.asarray(scale) if isinstance(scale, (list, tuple, np.ndarray, pd.Series)) else scale
+
+    def mean(self):
+        return self.loc
+
+    def std(self):
+        return self.scale
+
+    def cdf(self, x):
+        return norm.cdf(x, loc=self.loc, scale=self.scale)
+
+
+class FastDistributionRegressor(BaseEstimator, RegressorMixin):
+    """
+    A scikit-learn compatible distribution regressor that fits a base regressor
+    to predict the conditional mean (loc) and estimates the residual standard deviation (scale),
+    returning a NormalDistributionPrediction instance via pred_dist(X).
+    """
+    _estimator_type = "regressor"
+
+    def __init__(self, base_estimator=None):
+        self.base_estimator = base_estimator
+
+    def fit(self, X, y, sample_weight=None, **kwargs):
+        """
+        Fit the base estimator and compute residual standard deviation.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Training vector.
+        y : array-like of shape (n_samples,)
+            Target values.
+        sample_weight : array-like of shape (n_samples,), default=None
+            Sample weights.
+        """
+        if self.base_estimator is None:
+            self.base_estimator_ = StackedEnsembleRegressor()
+        else:
+            self.base_estimator_ = clone(self.base_estimator)
+
+        fit_args = {}
+        if sample_weight is not None:
+            fit_args['sample_weight'] = sample_weight
+        fit_args.update(kwargs)
+
+        try:
+            self.base_estimator_.fit(X, y, **fit_args)
+        except TypeError:
+            if sample_weight is not None:
+                self.base_estimator_.fit(X, y, sample_weight=sample_weight)
+            else:
+                self.base_estimator_.fit(X, y)
+
+        y_arr = np.asarray(y)
+        y_pred = self.base_estimator_.predict(X)
+        residuals = y_arr - y_pred
+
+        if sample_weight is not None:
+            w_arr = np.asarray(sample_weight)
+            weighted_var = np.average(residuals ** 2, weights=w_arr)
+            self.scale_ = float(np.sqrt(np.maximum(weighted_var, 1e-6)))
+        else:
+            self.scale_ = float(np.sqrt(np.maximum(np.var(residuals), 1e-6)))
+
+        self.is_fitted_ = True
+        return self
+
+    def predict(self, X):
+        """
+        Predict target values for X.
+        """
+        check_is_fitted(self, attributes=["is_fitted_"])
+        return self.base_estimator_.predict(X)
+
+    def pred_dist(self, X):
+        """
+        Predict target distribution for X.
+
+        Returns
+        -------
+        dist : NormalDistributionPrediction
+            A NormalDistributionPrediction object with mean (loc) and std dev (scale).
+        """
+        check_is_fitted(self, attributes=["is_fitted_"])
+        loc = np.asarray(self.predict(X))
+        scale = np.full_like(loc, self.scale_, dtype=float)
+        return NormalDistributionPrediction(loc, scale)
+
 
 class StackedEnsembleRegressor(BaseEstimator, RegressorMixin):
     """
@@ -25,7 +125,7 @@ class StackedEnsembleRegressor(BaseEstimator, RegressorMixin):
     4. Ridge
 
     Meta-Estimator:
-    Ridge
+    LassoCV
     """
     _estimator_type = "regressor"
 
@@ -38,9 +138,9 @@ class StackedEnsembleRegressor(BaseEstimator, RegressorMixin):
         
     def _initialize_models(self):
         # Sensible default parameters to keep training quiet and prevent overfitting
-        default_xgb = {"n_estimators": 100, "max_depth": 4, "learning_rate": 0.03, "verbosity": 0}
-        default_lgbm = {"n_estimators": 100, "max_depth": 4, "learning_rate": 0.03, "verbose": -1}
-        default_cat = {"n_estimators": 100, "max_depth": 4, "learning_rate": 0.03, "verbose": 0}
+        default_xgb = {"n_estimators": 100, "max_depth": 4, "learning_rate": 0.03, "verbosity": 0, "n_jobs": -1}
+        default_lgbm = {"n_estimators": 100, "max_depth": 4, "learning_rate": 0.03, "verbose": -1, "n_jobs": -1}
+        default_cat = {"n_estimators": 100, "max_depth": 4, "learning_rate": 0.03, "verbose": 0, "thread_count": -1}
         
         xgb_params = {**default_xgb, **(self.xgb_params or {})}
         lgbm_params = {**default_lgbm, **(self.lgbm_params or {})}
@@ -48,7 +148,7 @@ class StackedEnsembleRegressor(BaseEstimator, RegressorMixin):
         
         ridge_params = self.ridge_params or {}
         
-        default_meta = {"cv": 5, "max_iter": 2000}
+        default_meta = {"cv": 5, "max_iter": 2000, "n_jobs": -1}
         meta_params = {**default_meta, **(self.meta_params or {})}
         
         self.xgb_ = XGBRegressor(**xgb_params)
@@ -59,7 +159,7 @@ class StackedEnsembleRegressor(BaseEstimator, RegressorMixin):
         self.base_models_ = [self.xgb_, self.lgbm_, self.cat_, self.ridge_]
         self.meta_estimator_ = LassoCV(**meta_params)
 
-    def fit(self, X, y, cv_splits, sample_weight=None):
+    def fit(self, X, y, cv_splits=None, sample_weight=None):
         """
         Fit the stacked ensemble using custom walk-forward CV splits.
 
@@ -69,14 +169,11 @@ class StackedEnsembleRegressor(BaseEstimator, RegressorMixin):
             Training vector.
         y : array-like of shape (n_samples,)
             Target values.
-        cv_splits : list of tuples
-            List of (train_idx, val_idx) tuples representing the custom walk-forward folds.
+        cv_splits : list of tuples, default=None
+            List of (train_idx, val_idx) tuples. If None, default 5-fold CV is generated.
         sample_weight : array-like of shape (n_samples,), default=None
             Individual weights for each sample.
         """
-        if not cv_splits:
-            raise ValueError("cv_splits must contain at least one split tuple (train_idx, val_idx).")
-
         # Convert to DataFrame if not already
         if isinstance(X, pd.DataFrame):
             self.feature_names_in_ = X.columns.tolist()
@@ -89,6 +186,12 @@ class StackedEnsembleRegressor(BaseEstimator, RegressorMixin):
         y_arr = np.asarray(y)
         w_arr = np.asarray(sample_weight) if sample_weight is not None else None
         
+        if cv_splits is None:
+            kf = KFold(n_splits=5, shuffle=True, random_state=42)
+            cv_splits = list(kf.split(X_df))
+        elif not cv_splits:
+            raise ValueError("cv_splits must contain at least one split tuple (train_idx, val_idx).")
+
         # Initialize base models and meta-estimator
         self._initialize_models()
         
@@ -209,10 +312,10 @@ class StackedEnsembleClassifier(BaseEstimator, ClassifierMixin):
         
     def _initialize_models(self):
         # Sensible default parameters to keep training quiet and prevent overfitting
-        default_xgb = {"n_estimators": 100, "max_depth": 4, "learning_rate": 0.03, "verbosity": 0}
-        default_lgbm = {"n_estimators": 100, "max_depth": 4, "learning_rate": 0.03, "verbose": -1}
-        default_cat = {"n_estimators": 100, "max_depth": 4, "learning_rate": 0.03, "verbose": 0}
-        default_lr = {"max_iter": 2000}
+        default_xgb = {"n_estimators": 100, "max_depth": 4, "learning_rate": 0.03, "verbosity": 0, "n_jobs": -1}
+        default_lgbm = {"n_estimators": 100, "max_depth": 4, "learning_rate": 0.03, "verbose": -1, "n_jobs": -1}
+        default_cat = {"n_estimators": 100, "max_depth": 4, "learning_rate": 0.03, "verbose": 0, "thread_count": -1}
+        default_lr = {"max_iter": 2000, "n_jobs": -1}
         
         xgb_params = {**default_xgb, **(self.xgb_params or {})}
         lgbm_params = {**default_lgbm, **(self.lgbm_params or {})}
@@ -232,7 +335,7 @@ class StackedEnsembleClassifier(BaseEstimator, ClassifierMixin):
         self.base_models_ = [self.xgb_, self.lgbm_, self.cat_, self.lr_]
         self.meta_estimator_ = LogisticRegression(**meta_params)
 
-    def fit(self, X, y, cv_splits, sample_weight=None):
+    def fit(self, X, y, cv_splits=None, sample_weight=None):
         """
         Fit the stacked ensemble using custom walk-forward CV splits.
 
@@ -242,14 +345,11 @@ class StackedEnsembleClassifier(BaseEstimator, ClassifierMixin):
             Training vector.
         y : array-like of shape (n_samples,)
             Target class labels.
-        cv_splits : list of tuples
-            List of (train_idx, val_idx) tuples representing the custom walk-forward folds.
+        cv_splits : list of tuples, default=None
+            List of (train_idx, val_idx) tuples. If None, default 5-fold CV is generated.
         sample_weight : array-like of shape (n_samples,), default=None
             Individual weights for each sample.
         """
-        if not cv_splits:
-            raise ValueError("cv_splits must contain at least one split tuple (train_idx, val_idx).")
-
         # Convert to DataFrame if not already
         if isinstance(X, pd.DataFrame):
             self.feature_names_in_ = X.columns.tolist()
@@ -264,6 +364,12 @@ class StackedEnsembleClassifier(BaseEstimator, ClassifierMixin):
         
         self.classes_ = np.unique(y_arr)
         
+        if cv_splits is None:
+            kf = KFold(n_splits=5, shuffle=True, random_state=42)
+            cv_splits = list(kf.split(X_df))
+        elif not cv_splits:
+            raise ValueError("cv_splits must contain at least one split tuple (train_idx, val_idx).")
+
         # Initialize base models and meta-estimator
         self._initialize_models()
         
@@ -404,7 +510,7 @@ class StackedEnsembleClassifier(BaseEstimator, ClassifierMixin):
 
 # --- Unit Tests & Validation Checks ---
 if __name__ == "__main__":
-    print("Running StackedEnsemble tests...")
+    print("Running StackedEnsemble and DistributionRegressor tests...")
     
     from sklearn.datasets import make_regression, make_classification
     
@@ -474,4 +580,24 @@ if __name__ == "__main__":
     assert probs_clf_w.shape == (100, 2), f"Expected shape (100, 2), got {probs_clf_w.shape}"
     print("Classifier fit and predict with weights: SUCCESS")
     
+    # 3. Test NormalDistributionPrediction & FastDistributionRegressor
+    print("\n--- Testing NormalDistributionPrediction & FastDistributionRegressor ---")
+    norm_pred = NormalDistributionPrediction(loc=np.array([1.0, 2.0]), scale=np.array([0.5, 0.5]))
+    assert np.allclose(norm_pred.mean(), [1.0, 2.0]), "NormalDistributionPrediction.mean() failed"
+    assert np.allclose(norm_pred.std(), [0.5, 0.5]), "NormalDistributionPrediction.std() failed"
+    assert np.allclose(norm_pred.loc, [1.0, 2.0]), "NormalDistributionPrediction.loc failed"
+    assert np.allclose(norm_pred.scale, [0.5, 0.5]), "NormalDistributionPrediction.scale failed"
+    assert len(norm_pred.cdf([1.0, 2.0])) == 2, "NormalDistributionPrediction.cdf failed"
+    print("NormalDistributionPrediction: SUCCESS")
+
+    fast_dist_reg = FastDistributionRegressor()
+    fast_dist_reg.fit(X_reg, y_reg, cv_splits=cv_splits_reg, sample_weight=w_reg)
+    fast_preds = fast_dist_reg.predict(X_reg)
+    assert fast_preds.shape == (100,), f"Expected shape (100,), got {fast_preds.shape}"
+    dist_obj = fast_dist_reg.pred_dist(X_reg)
+    assert isinstance(dist_obj, NormalDistributionPrediction), "pred_dist did not return NormalDistributionPrediction"
+    assert dist_obj.mean().shape == (100,), f"Expected dist.mean() shape (100,), got {dist_obj.mean().shape}"
+    assert dist_obj.std().shape == (100,), f"Expected dist.std() shape (100,), got {dist_obj.std().shape}"
+    print("FastDistributionRegressor: SUCCESS")
+
     print("\nAll unit tests passed successfully!")

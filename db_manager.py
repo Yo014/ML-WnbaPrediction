@@ -83,7 +83,10 @@ def create_tables(db_path=DB_NAME):
         AST REAL,
         TRB REAL,
         USG_PCT REAL,
-        BPM REAL,
+        NET_RATING REAL,
+        OFF_RATING REAL,
+        DEF_RATING REAL,
+        PIE REAL,
         WS REAL
     );
     """)
@@ -146,6 +149,9 @@ def create_indices(db_path=DB_NAME):
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_matches_hometeam ON raw_matches(HomeTeam);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_matches_awayteam ON raw_matches(AwayTeam);")
     cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_poly_match ON polymarket_odds(match_date, home_team, away_team);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_player_stats_lookup ON player_stats(Player, Season);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_injuries_team ON injuries(Team);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_poly_lookup ON polymarket_odds(home_team, away_team, match_date);")
     
     conn.commit()
     conn.close()

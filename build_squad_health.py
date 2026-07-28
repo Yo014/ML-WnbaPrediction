@@ -70,7 +70,8 @@ def build_squad_health():
     # Initialize team metrics dictionary
     team_metrics = {team: {
         'Missing_Usage_Pct': 0.0,
-        'Missing_BPM_Pct': 0.0,
+        'Missing_Net_Rating': 0.0,
+        'Missing_PIE': 0.0,
         'Missing_Minutes_Pct': 0.0,
         'Injured_Players_Count': 0
     } for team in ALL_TEAMS}
@@ -84,14 +85,15 @@ def build_squad_health():
             print(f"Warning: Team {team} is not in the tracked teams list. Adding it dynamically.")
             team_metrics[team] = {
                 'Missing_Usage_Pct': 0.0,
-                'Missing_BPM_Pct': 0.0,
+                'Missing_Net_Rating': 0.0,
+                'Missing_PIE': 0.0,
                 'Missing_Minutes_Pct': 0.0,
                 'Injured_Players_Count': 0
             }
             
         # Query player stats (most recent season)
         cursor.execute("""
-            SELECT MIN, USG_PCT, BPM, Season, GP
+            SELECT MIN, USG_PCT, NET_RATING, PIE, Season, GP
             FROM player_stats
             WHERE Player = ?
             ORDER BY Season DESC
@@ -102,27 +104,30 @@ def build_squad_health():
         if row:
             min_avg = row[0]
             usg_pct = row[1]
-            bpm = row[2]
-            season = row[3]
-            gp = row[4]
-            print(f"Found stats for {player} (Season: {season}, Team: {team}): MIN={min_avg}, USG%={usg_pct}, BPM={bpm}")
+            net_rating = row[2]
+            pie = row[3]
+            season = row[4]
+            gp = row[5]
+            print(f"Found stats for {player} (Season: {season}, Team: {team}): MIN={min_avg}, USG%={usg_pct}, NET_RATING={net_rating}, PIE={pie}")
         else:
             print(f"Warning: No stats found in database for {player}. Using default 0.0 values.")
             min_avg = 0.0
             usg_pct = 0.0
-            bpm = 0.0
+            net_rating = 0.0
+            pie = 0.0
             gp = 0
             
         # Calculate metric contributions
         # USG_PCT is stored as a fraction (e.g., 0.289 = 28.9%). Missing_Usage_Pct is sum of USG%
         player_usg = usg_pct * 100.0
-        # BPM is summed as is
-        player_bpm = bpm
-        # MIN% = MIN_avg / 200.0, and we express as percentage (MIN / 200.0) * 100.0 = MIN / 2.0
+        # Minutes-weighted NET_RATING and PIE
+        player_net_rating_weighted = min_avg * net_rating
+        player_pie_weighted = min_avg * pie
         player_min_pct = (min_avg / 200.0) * 100.0
         
         team_metrics[team]['Missing_Usage_Pct'] += player_usg
-        team_metrics[team]['Missing_BPM_Pct'] += player_bpm
+        team_metrics[team]['Missing_Net_Rating'] += player_net_rating_weighted
+        team_metrics[team]['Missing_PIE'] += player_pie_weighted
         team_metrics[team]['Missing_Minutes_Pct'] += player_min_pct
         team_metrics[team]['Injured_Players_Count'] += 1
         
@@ -134,7 +139,8 @@ def build_squad_health():
         records.append({
             'Team': team,
             'Missing_Usage_Pct': round(metrics['Missing_Usage_Pct'], 3),
-            'Missing_BPM_Pct': round(metrics['Missing_BPM_Pct'], 3),
+            'Missing_Net_Rating': round(metrics['Missing_Net_Rating'], 3),
+            'Missing_PIE': round(metrics['Missing_PIE'], 3),
             'Missing_Minutes_Pct': round(metrics['Missing_Minutes_Pct'], 3),
             'Injured_Players_Count': metrics['Injured_Players_Count']
         })

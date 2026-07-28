@@ -554,12 +554,14 @@
       color: var(--color-text-muted);
     }
     
+    .player-stats-pill.positive-net,
     .player-stats-pill.positive-bpm {
       color: var(--neon-emerald);
       background: rgba(16, 185, 129, 0.05);
       border-color: rgba(16, 185, 129, 0.1);
     }
     
+    .player-stats-pill.negative-net,
     .player-stats-pill.negative-bpm {
       color: var(--neon-rose);
       background: rgba(244, 63, 94, 0.05);
@@ -747,8 +749,12 @@
               <span id="home-health-usg" class="health-metric-value">0.0%</span>
             </div>
             <div class="health-metric-box">
-              <span class="health-metric-label">Missing BPM</span>
-              <span id="home-health-bpm" class="health-metric-value">0.0</span>
+              <span class="health-metric-label">Missing NET</span>
+              <span id="home-health-net" class="health-metric-value">0.0</span>
+            </div>
+            <div class="health-metric-box">
+              <span class="health-metric-label">Missing PIE</span>
+              <span id="home-health-pie" class="health-metric-value">0.0%</span>
             </div>
             <div class="health-metric-box">
               <span class="health-metric-label">Missing Min%</span>
@@ -778,8 +784,12 @@
               <span id="away-health-usg" class="health-metric-value">0.0%</span>
             </div>
             <div class="health-metric-box">
-              <span class="health-metric-label">Missing BPM</span>
-              <span id="away-health-bpm" class="health-metric-value">0.0</span>
+              <span class="health-metric-label">Missing NET</span>
+              <span id="away-health-net" class="health-metric-value">0.0</span>
+            </div>
+            <div class="health-metric-box">
+              <span class="health-metric-label">Missing PIE</span>
+              <span id="away-health-pie" class="health-metric-value">0.0%</span>
             </div>
             <div class="health-metric-box">
               <span class="health-metric-label">Missing Min%</span>
@@ -923,10 +933,14 @@
         // Pre-configure content
         const minVal = player.min.toFixed(1);
         const usgVal = (player.usg_pct * 100).toFixed(1);
-        const bpmVal = player.bpm.toFixed(1);
         
-        const bpmClass = player.bpm >= 0 ? 'positive-bpm' : 'negative-bpm';
-        const bpmSign = player.bpm > 0 ? '+' : '';
+        const netRating = player.net_rating ?? player.net ?? player.bpm ?? 0.0;
+        const netVal = netRating.toFixed(1);
+        const netClass = netRating >= 0 ? 'positive-net' : 'negative-net';
+        const netSign = netRating > 0 ? '+' : '';
+        
+        const pieRaw = player.pie ?? 0.0;
+        const pieVal = (pieRaw <= 1.0 && pieRaw > 0 ? pieRaw * 100 : pieRaw).toFixed(1);
         
         let injuryBadge = '';
         if (player.injured) {
@@ -941,7 +955,8 @@
             <div class="player-sub">
               <span class="player-stats-pill">${minVal} MPG</span>
               <span class="player-stats-pill">${usgVal}% USG</span>
-              <span class="player-stats-pill ${bpmClass}">${bpmSign}${bpmVal} BPM</span>
+              <span class="player-stats-pill ${netClass}">${netSign}${netVal} NET</span>
+              <span class="player-stats-pill">${pieVal}% PIE</span>
               ${injuryBadge}
             </div>
           </div>
@@ -1046,13 +1061,32 @@
         const hh = result.home_health;
         const ah = result.away_health;
         
+        const hhNet = hh.Missing_Net_Rating ?? hh.Missing_Net_Rating_Pct ?? hh.Missing_NET_Pct ?? hh.Missing_BPM_Pct ?? 0.0;
+        const hhPie = hh.Missing_PIE ?? hh.Missing_PIE_Pct ?? 0.0;
+        const ahNet = ah.Missing_Net_Rating ?? ah.Missing_Net_Rating_Pct ?? ah.Missing_NET_Pct ?? ah.Missing_BPM_Pct ?? 0.0;
+        const ahPie = ah.Missing_PIE ?? ah.Missing_PIE_Pct ?? 0.0;
+        
         document.getElementById('home-health-usg').textContent = `${hh.Missing_Usage_Pct.toFixed(1)}%`;
-        document.getElementById('home-health-bpm').textContent = `${hh.Missing_BPM_Pct.toFixed(1)}`;
+        const homeNetEl = document.getElementById('home-health-net');
+        if (homeNetEl) homeNetEl.textContent = `${hhNet.toFixed(1)}`;
+        const homePieEl = document.getElementById('home-health-pie');
+        if (homePieEl) homePieEl.textContent = `${hhPie.toFixed(1)}%`;
+        // Keep fallback support just in case
+        const homeBpmEl = document.getElementById('home-health-bpm');
+        if (homeBpmEl) homeBpmEl.textContent = `${hhNet.toFixed(1)}`;
+        
         document.getElementById('home-health-min').textContent = `${hh.Missing_Minutes_Pct.toFixed(1)}%`;
         document.getElementById('home-health-count').textContent = hh.Injured_Players_Count;
         
         document.getElementById('away-health-usg').textContent = `${ah.Missing_Usage_Pct.toFixed(1)}%`;
-        document.getElementById('away-health-bpm').textContent = `${ah.Missing_BPM_Pct.toFixed(1)}`;
+        const awayNetEl = document.getElementById('away-health-net');
+        if (awayNetEl) awayNetEl.textContent = `${ahNet.toFixed(1)}`;
+        const awayPieEl = document.getElementById('away-health-pie');
+        if (awayPieEl) awayPieEl.textContent = `${ahPie.toFixed(1)}%`;
+        // Keep fallback support just in case
+        const awayBpmEl = document.getElementById('away-health-bpm');
+        if (awayBpmEl) awayBpmEl.textContent = `${ahNet.toFixed(1)}`;
+        
         document.getElementById('away-health-min').textContent = `${ah.Missing_Minutes_Pct.toFixed(1)}%`;
         document.getElementById('away-health-count').textContent = ah.Injured_Players_Count;
         

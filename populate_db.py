@@ -124,6 +124,20 @@ def generate_betting_data(home_team, away_team, date, r_home, r_away):
     
     return opening_spread, closing_spread, bookie_home_odds, bookie_away_odds, over_under
 
+def call_nba_api_with_retry(fetch_fn, description="", max_retries=5, base_delay=2.0):
+    for attempt in range(1, max_retries + 1):
+        try:
+            time.sleep(base_delay + random.uniform(0.5, 1.5))
+            return fetch_fn()
+        except Exception as e:
+            if attempt < max_retries:
+                wait_time = base_delay * (2 ** (attempt - 1)) + random.uniform(1.0, 3.0)
+                print(f"  Attempt {attempt}/{max_retries} for {description} failed ({e}). Retrying in {wait_time:.1f}s...")
+                time.sleep(wait_time)
+            else:
+                print(f"  Failed all {max_retries} attempts for {description}: {e}")
+                return None
+
 def fetch_games(seasons):
     """
     Fetches team game logs for WNBA regular seasons.
@@ -131,26 +145,18 @@ def fetch_games(seasons):
     all_game_rows = []
     for season in seasons:
         print(f"Fetching game logs for WNBA season {season}...")
-        try:
-            time.sleep(1.2)
+        def _get():
             g = leaguegamelog.LeagueGameLog(
                 league_id='10',
                 season=season,
-                season_type_all_star='Regular Season'
+                season_type_all_star='Regular Season',
+                timeout=30
             )
-            df = g.get_data_frames()[0]
+            return g.get_data_frames()[0]
+            
+        df = call_nba_api_with_retry(_get, f"game logs season {season}")
+        if df is not None and not df.empty:
             print(f"  Successfully fetched {len(df)} rows for season {season}")
-            all_game_rows.append(df)
-        except Exception as e:
-            print(f"  Error fetching games for season {season}: {e}. Retrying with double wait...")
-            time.sleep(3.0)
-            g = leaguegamelog.LeagueGameLog(
-                league_id='10',
-                season=season,
-                season_type_all_star='Regular Season'
-            )
-            df = g.get_data_frames()[0]
-            print(f"  Successfully fetched {len(df)} rows for season {season} on retry")
             all_game_rows.append(df)
             
     if not all_game_rows:
@@ -246,26 +252,30 @@ def fetch_player_stats(seasons):
     all_player_stats = []
     for season in seasons:
         print(f"Fetching player stats for WNBA season {season}...")
-        try:
-            time.sleep(1.2)
-            base_df = leaguedashplayerstats.LeagueDashPlayerStats(
+        
+        def _get_base():
+            return leaguedashplayerstats.LeagueDashPlayerStats(
                 league_id_nullable='10',
                 season=season,
                 season_type_all_star='Regular Season',
-                measure_type_detailed_defense='Base'
+                measure_type_detailed_defense='Base',
+                timeout=30
             ).get_data_frames()[0]
             
-            time.sleep(1.2)
-            adv_df = leaguedashplayerstats.LeagueDashPlayerStats(
+        def _get_adv():
+            return leaguedashplayerstats.LeagueDashPlayerStats(
                 league_id_nullable='10',
                 season=season,
                 season_type_all_star='Regular Season',
-                measure_type_detailed_defense='Advanced'
+                measure_type_detailed_defense='Advanced',
+                timeout=30
             ).get_data_frames()[0]
-            
+
+        base_df = call_nba_api_with_retry(_get_base, f"base player stats season {season}")
+        adv_df = call_nba_api_with_retry(_get_adv, f"advanced player stats season {season}")
+        
+        if base_df is not None and adv_df is not None and not base_df.empty and not adv_df.empty:
             print(f"  Successfully fetched {len(base_df)} base and {len(adv_df)} advanced rows for {season}")
-            
-            # Merge base and advanced datasets
             merged = pd.merge(
                 base_df,
                 adv_df,
@@ -274,30 +284,8 @@ def fetch_player_stats(seasons):
             )
             merged['Season'] = int(season)
             all_player_stats.append(merged)
-        except Exception as e:
-            print(f"  Error fetching player stats for season {season}: {e}. Retrying...")
-            time.sleep(3.0)
-            base_df = leaguedashplayerstats.LeagueDashPlayerStats(
-                league_id_nullable='10',
-                season=season,
-                season_type_all_star='Regular Season',
-                measure_type_detailed_defense='Base'
-            ).get_data_frames()[0]
-            time.sleep(1.5)
-            adv_df = leaguedashplayerstats.LeagueDashPlayerStats(
-                league_id_nullable='10',
-                season=season,
-                season_type_all_star='Regular Season',
-                measure_type_detailed_defense='Advanced'
-            ).get_data_frames()[0]
-            merged = pd.merge(
-                base_df,
-                adv_df,
-                on=['PLAYER_ID', 'TEAM_ID'],
-                suffixes=('', '_adv')
-            )
-            merged['Season'] = int(season)
-            all_player_stats.append(merged)
+        else:
+            print(f"  Warning: Skipping player stats for season {season} due to fetch errors.")
             
     if not all_player_stats:
         return pd.DataFrame()
@@ -349,15 +337,11 @@ def process_player_stats(df):
         tov_36 = tov_pg * factor
         pf_36 = pf_pg * factor
         
-        net_rating = row.get('NET_RATING', 0.0)
+        net_rating = float(row.get('NET_RATING', 0.0)) if row.get('NET_RATING') is not None else 0.0
+        off_rating = float(row.get('OFF_RATING', 0.0)) if row.get('OFF_RATING') is not None else 0.0
+        def_rating = float(row.get('DEF_RATING', 0.0)) if row.get('DEF_RATING') is not None else 0.0
+        pie = float(row.get('PIE', 0.0)) if row.get('PIE') is not None else 0.0
         usg_pct = row.get('USG_PCT', 0.0) * 100.0
-        
-        # Box score contribution (BSC)
-        bsc_36 = pts_36 + 1.2 * ast_36 + 0.8 * reb_36 + 2.0 * stl_36 + 2.0 * blk_36 - 1.5 * tov_36 - 0.2 * pf_36
-        
-        # Approximate BPM: rate-based player performance metric
-        bpm = 0.22 * bsc_36 + 0.15 * net_rating + 0.12 * usg_pct - 9.0
-        bpm = round(max(-15.0, min(15.0, bpm)), 2)
         
         # Approximate Win Shares: cumulative metric
         off_cont = pts + 0.5 * ast - 0.9 * tov + 0.1 * fgm
@@ -377,7 +361,10 @@ def process_player_stats(df):
             'AST': round(ast_pg, 1),
             'TRB': round(reb_pg, 1),
             'USG_PCT': round(row.get('USG_PCT', 0.0), 3),
-            'BPM': bpm,
+            'NET_RATING': round(net_rating, 2),
+            'OFF_RATING': round(off_rating, 2),
+            'DEF_RATING': round(def_rating, 2),
+            'PIE': round(pie, 4),
             'WS': ws
         })
         
@@ -574,9 +561,9 @@ def main():
     # Insert player stats
     cursor.executemany("""
     INSERT INTO player_stats (
-        Season, Player, Team, GP, MIN, PTS, AST, TRB, USG_PCT, BPM, WS
+        Season, Player, Team, GP, MIN, PTS, AST, TRB, USG_PCT, NET_RATING, OFF_RATING, DEF_RATING, PIE, WS
     ) VALUES (
-        :Season, :Player, :Team, :GP, :MIN, :PTS, :AST, :TRB, :USG_PCT, :BPM, :WS
+        :Season, :Player, :Team, :GP, :MIN, :PTS, :AST, :TRB, :USG_PCT, :NET_RATING, :OFF_RATING, :DEF_RATING, :PIE, :WS
     );
     """, processed_players)
     

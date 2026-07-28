@@ -8,9 +8,15 @@ import os
 from datetime import datetime
 from sklearn.metrics import mean_absolute_error, log_loss
 from scipy.stats import norm
-from sklearn.isotonic import IsotonicRegression
+from sklearn.linear_model import LogisticRegression
 
-from stacking_models import StackedEnsembleRegressor, StackedEnsembleClassifier
+from stacking_models import StackedEnsembleRegressor, StackedEnsembleClassifier, FastDistributionRegressor
+from joblib import Parallel, delayed
+
+def fit_stage1_regressor(X, y, cv_splits, sample_weight):
+    reg = StackedEnsembleRegressor()
+    reg.fit(X, y, cv_splits=cv_splits, sample_weight=sample_weight)
+    return reg
 
 class WalkForwardSeasonSplitter:
     def __init__(self, seasons_series):
@@ -79,6 +85,7 @@ def train_totals_model():
         # Pace (EMA)
         'Home_Pace_EMA_5', 'Home_Pace_EMA_10',
         'Away_Pace_EMA_5', 'Away_Pace_EMA_10',
+        'Expected_Pace',
         
         # Four Factors (EMA)
         'Home_eFG%_EMA_5', 'Home_TOV%_EMA_5', 'Home_ORB%_EMA_5', 'Home_FT_Rate_EMA_5',
@@ -90,13 +97,20 @@ def train_totals_model():
         'Home_Days_Rest', 'Home_Back_To_Back', 'Home_Three_In_Four',
         'Away_Days_Rest', 'Away_Back_To_Back', 'Away_Three_In_Four',
         'Rest_Diff',
+        'Home_Travel_Miles_7d', 'Home_Timezone_Changes_7d', 'Home_Fatigue_Score',
+        'Away_Travel_Miles_7d', 'Away_Timezone_Changes_7d', 'Away_Fatigue_Score',
+        'Travel_Miles_Diff', 'Fatigue_Score_Diff', 'Combined_Fatigue_Score',
+        
+        # Expected Scores
+        'Home_Expected_Pts', 'Away_Expected_Pts', 'Expected_Game_Total',
         
         # Talent Floor
         'Home_Talent_Floor', 'Away_Talent_Floor', 'Talent_Floor_Diff',
         
         # Squad Health
         'Home_Missing_Usage_Pct', 'Away_Missing_Usage_Pct',
-        'Home_Missing_BPM_Pct', 'Away_Missing_BPM_Pct',
+        'Home_Missing_Net_Rating', 'Away_Missing_Net_Rating',
+        'Home_Missing_PIE', 'Away_Missing_PIE',
         'Home_Missing_Minutes_Pct', 'Away_Missing_Minutes_Pct',
         'Home_Injured_Players_Count', 'Away_Injured_Players_Count',
         'Missing_Usage_Diff',
@@ -107,7 +121,7 @@ def train_totals_model():
         'H2H_Bias',
         
         # Referee Features
-        'Ref_Pts_EMA', 'Ref_Fouls_EMA', 'Ref_HomeWin_EMA',
+        'Ref_Pts_EMA', 'Ref_Fouls_EMA', 'Ref_HomeWin_EMA', 'Ref_Foul_Impact', 'Ref_FreeThrow_Rate',
         
         # Market Features
         'BookieHomeOdds', 'BookieAwayOdds', 'OpeningSpread', 'ClosingSpread', 'OverUnder', 'Prob_Home', 'Market_Disagreement'
@@ -173,8 +187,8 @@ def train_totals_model():
     print(f"Selected Baseline features: {len(selected_baseline_features)}")
     print(f"Selected Full features: {len(selected_full_features)}")
     
-    # 5. Dynamic Decay Parameter Optimization (Grid Search)
-    lambdas = [0.0001, 0.0003, 0.0005, 0.0008, 0.001, 0.0015, 0.002]
+    # 5. Dynamic Decay Optimization (Grid Search)
+    lambdas = [0.0005, 0.001, 0.0015, 0.002]
     best_log_loss = float('inf')
     best_lambda = None
     best_oof_s1 = None
@@ -193,6 +207,7 @@ def train_totals_model():
         val_indices_seen = []
         
         for fold_idx, (train_idx, val_idx) in enumerate(cv_splits):
+            print(f"--- Starting Outer Fold {fold_idx + 1}/{len(cv_splits)} ---", flush=True)
             train_fold_df = train_val_df.iloc[train_idx].copy().reset_index(drop=True)
             
             # Calculate weights
@@ -216,25 +231,24 @@ def train_totals_model():
             y_tr_clf_s1 = (y_tr_reg > median_total).astype(int)
             y_tr_clf_s2 = (y_tr_reg > train_fold_df['OverUnder'].values).astype(int)
             
-            # Fit Stage 1 Models (Baseline)
-            fold_stage1_pace_reg = StackedEnsembleRegressor()
-            fold_stage1_pace_reg.fit(train_fold_df[selected_baseline_features], y_tr_pace, nested_splits, sample_weight=w_fold)
+            # Parallel fit Stage 1 Models (Baseline)
+            print(f"  [Fold {fold_idx + 1}] Parallel fitting Stage 1 regressors (Pace, Home Eff, Away Eff)...", flush=True)
+            X_tr_base = train_fold_df[selected_baseline_features]
+            stage1_regs = Parallel(n_jobs=3)(
+                delayed(fit_stage1_regressor)(X_tr_base, y_target, nested_splits, w_fold)
+                for y_target in [y_tr_pace, y_tr_home_eff, y_tr_away_eff]
+            )
+            fold_stage1_pace_reg, fold_stage1_home_eff_reg, fold_stage1_away_eff_reg = stage1_regs
             
-            fold_stage1_home_eff_reg = StackedEnsembleRegressor()
-            fold_stage1_home_eff_reg.fit(train_fold_df[selected_baseline_features], y_tr_home_eff, nested_splits, sample_weight=w_fold)
-            
-            fold_stage1_away_eff_reg = StackedEnsembleRegressor()
-            fold_stage1_away_eff_reg.fit(train_fold_df[selected_baseline_features], y_tr_away_eff, nested_splits, sample_weight=w_fold)
-            
+            print(f"  [Fold {fold_idx + 1}] Fitting Stage 1 classifier...", flush=True)
             fold_stage1_clf = StackedEnsembleClassifier()
-            fold_stage1_clf.fit(train_fold_df[selected_baseline_features], y_tr_clf_s1, nested_splits, sample_weight=w_fold)
+            fold_stage1_clf.fit(X_tr_base, y_tr_clf_s1, nested_splits, sample_weight=w_fold)
             
             # Generate s1_total_pred for train_fold_df (in-sample for Fold 0)
             if fold_idx == 0:
-                X_train_baseline = train_fold_df[selected_baseline_features]
-                pace_pred_tr = fold_stage1_pace_reg.predict(X_train_baseline)
-                home_eff_pred_tr = fold_stage1_home_eff_reg.predict(X_train_baseline)
-                away_eff_pred_tr = fold_stage1_away_eff_reg.predict(X_train_baseline)
+                pace_pred_tr = fold_stage1_pace_reg.predict(X_tr_base)
+                home_eff_pred_tr = fold_stage1_home_eff_reg.predict(X_tr_base)
+                away_eff_pred_tr = fold_stage1_away_eff_reg.predict(X_tr_base)
                 s1_total_pred_oof[train_idx] = pace_pred_tr * (home_eff_pred_tr + away_eff_pred_tr) / 100.0
                 
             # Assign s1_total_pred to train_fold_df
@@ -244,18 +258,13 @@ def train_totals_model():
             # Fit Stage 2 Models (Residuals)
             y_residual_tr = y_tr_reg - train_fold_df['OverUnder'].values
             
-            fold_stage2_reg = StackedEnsembleRegressor()
-            fold_stage2_reg.fit(train_fold_df[selected_full_features_s2], y_residual_tr, nested_splits, sample_weight=w_fold)
+            print(f"  [Fold {fold_idx + 1}] Fitting Stage 2 FastDistributionRegressor...", flush=True)
+            fold_stage2_reg = FastDistributionRegressor()
+            fold_stage2_reg.fit(train_fold_df[selected_full_features_s2], y_residual_tr, cv_splits=nested_splits, sample_weight=w_fold)
             
+            print(f"  [Fold {fold_idx + 1}] Fitting Stage 2 classifier...", flush=True)
             fold_stage2_clf = StackedEnsembleClassifier()
             fold_stage2_clf.fit(train_fold_df[selected_full_features_s2], y_tr_clf_s2, nested_splits, sample_weight=w_fold)
-            
-            # Fit Quantile Regressors
-            fold_q10 = lgb.LGBMRegressor(objective='quantile', alpha=0.10, random_state=42, verbose=-1)
-            fold_q10.fit(train_fold_df[selected_full_features_s2], y_tr_reg, sample_weight=w_fold)
-            
-            fold_q90 = lgb.LGBMRegressor(objective='quantile', alpha=0.90, random_state=42, verbose=-1)
-            fold_q90.fit(train_fold_df[selected_full_features_s2], y_tr_reg, sample_weight=w_fold)
             
             # Predict on val_idx
             X_val_baseline = train_val_df.iloc[val_idx][selected_baseline_features]
@@ -278,14 +287,10 @@ def train_totals_model():
             X_val_full_s2 = X_val_full.copy()
             X_val_full_s2['s1_total_pred'] = s1_total_pred_val
             
-            s2_residual_pred = fold_stage2_reg.predict(X_val_full_s2)
-            p10_pred = fold_q10.predict(X_val_full_s2)
-            p90_pred = fold_q90.predict(X_val_full_s2)
+            stage2_dist = fold_stage2_reg.pred_dist(X_val_full_s2)
+            s2_residual_pred = stage2_dist.mean()
             
-            sigma_pred = (p90_pred - p10_pred) / 2.563
-            sigma_pred = np.maximum(sigma_pred, 1e-3)
-            
-            P_CDF = norm.cdf(s2_residual_pred / sigma_pred)
+            P_CDF = 1.0 - stage2_dist.cdf(np.zeros(len(X_val_full_s2)))
             P_Clf = fold_stage2_clf.predict_proba(X_val_full_s2)[:, 1]
             s2_prob = 0.5 * P_CDF + 0.5 * P_Clf
             oof_stage2_probs[val_idx] = s2_prob
@@ -313,13 +318,13 @@ def train_totals_model():
             
     print(f"\nOptimal lambda: {best_lambda} (Validation Log Loss: {best_log_loss:.6f})")
     
-    # 6. Fit Isotonic calibrators
-    print("\nFitting Isotonic Calibrators on Out-of-Fold blended probabilities...")
-    stage1_calibrator = IsotonicRegression(out_of_bounds='clip')
-    stage1_calibrator.fit(best_oof_s1, best_oof_y_s1)
+    # 6. Fit Logistic calibrators
+    print("\nFitting Logistic Calibrators on Out-of-Fold blended probabilities...")
+    stage1_calibrator = LogisticRegression(C=1.0)
+    stage1_calibrator.fit(best_oof_s1.reshape(-1, 1), best_oof_y_s1)
     
-    stage2_calibrator = IsotonicRegression(out_of_bounds='clip')
-    stage2_calibrator.fit(best_oof_s2, best_oof_y_s2)
+    stage2_calibrator = LogisticRegression(C=1.0)
+    stage2_calibrator.fit(best_oof_s2.reshape(-1, 1), best_oof_y_s2)
     
     # 7. Train final models using optimal lambda
     print(f"\nTraining final models on entire tuning dataset with optimal decay = {best_lambda}...")
@@ -333,34 +338,27 @@ def train_totals_model():
     y_clf_train_val_s1 = (y_reg_train_val > median_train_val).astype(int)
     y_clf_train_val_s2 = (y_reg_train_val > train_val_df['OverUnder'].values).astype(int)
     
-    stage1_pace_reg = StackedEnsembleRegressor()
-    stage1_pace_reg.fit(train_val_df[selected_baseline_features], y_reg_train_val_pace, cv_splits, sample_weight=train_val_weights)
-    
-    stage1_home_eff_reg = StackedEnsembleRegressor()
-    stage1_home_eff_reg.fit(train_val_df[selected_baseline_features], y_reg_train_val_home_eff, cv_splits, sample_weight=train_val_weights)
-    
-    stage1_away_eff_reg = StackedEnsembleRegressor()
-    stage1_away_eff_reg.fit(train_val_df[selected_baseline_features], y_reg_train_val_away_eff, cv_splits, sample_weight=train_val_weights)
+    X_tv_base = train_val_df[selected_baseline_features]
+    print("Parallel fitting Stage 1 regressors (Pace, Home Eff, Away Eff)...", flush=True)
+    stage1_regs = Parallel(n_jobs=3)(
+        delayed(fit_stage1_regressor)(X_tv_base, y_target, cv_splits, train_val_weights)
+        for y_target in [y_reg_train_val_pace, y_reg_train_val_home_eff, y_reg_train_val_away_eff]
+    )
+    stage1_pace_reg, stage1_home_eff_reg, stage1_away_eff_reg = stage1_regs
     
     stage1_clf = StackedEnsembleClassifier()
-    stage1_clf.fit(train_val_df[selected_baseline_features], y_clf_train_val_s1, cv_splits, sample_weight=train_val_weights)
+    stage1_clf.fit(X_tv_base, y_clf_train_val_s1, cv_splits, sample_weight=train_val_weights)
     
     # Add s1_total_pred to train_val_df
     train_val_df['s1_total_pred'] = best_s1_total_pred_train_val
     selected_full_features_s2 = selected_full_features + ['s1_total_pred']
     
     y_residual_train_val = y_reg_train_val - train_val_df['OverUnder'].values
-    stage2_reg = StackedEnsembleRegressor()
-    stage2_reg.fit(train_val_df[selected_full_features_s2], y_residual_train_val, cv_splits, sample_weight=train_val_weights)
+    stage2_reg = FastDistributionRegressor()
+    stage2_reg.fit(train_val_df[selected_full_features_s2], y_residual_train_val, cv_splits=cv_splits, sample_weight=train_val_weights)
     
     stage2_clf = StackedEnsembleClassifier()
     stage2_clf.fit(train_val_df[selected_full_features_s2], y_clf_train_val_s2, cv_splits, sample_weight=train_val_weights)
-    
-    quantile_10 = lgb.LGBMRegressor(objective='quantile', alpha=0.10, random_state=42, verbose=-1)
-    quantile_10.fit(train_val_df[selected_full_features_s2], y_reg_train_val, sample_weight=train_val_weights)
-    
-    quantile_90 = lgb.LGBMRegressor(objective='quantile', alpha=0.90, random_state=42, verbose=-1)
-    quantile_90.fit(train_val_df[selected_full_features_s2], y_reg_train_val, sample_weight=train_val_weights)
     
     # 8. Evaluate on the held-out June 2026 test set
     X_test_baseline = test_df[selected_baseline_features]
@@ -384,15 +382,14 @@ def train_totals_model():
     X_test_full_s2 = X_test_full.copy()
     X_test_full_s2['s1_total_pred'] = s1_total_pred_test
     
-    stage2_residual_pred = stage2_reg.predict(X_test_full_s2)
+    stage2_dist = stage2_reg.pred_dist(X_test_full_s2)
+    stage2_residual_pred = stage2_dist.mean()
     stage2_predicted_total = test_df['OverUnder'].values + stage2_residual_pred
-    p10_pred = quantile_10.predict(X_test_full_s2)
-    p90_pred = quantile_90.predict(X_test_full_s2)
     
-    sigma_pred = (p90_pred - p10_pred) / 2.563
+    sigma_pred = stage2_dist.std()
     sigma_pred = np.maximum(sigma_pred, 1e-3)
     
-    P_CDF = norm.cdf(stage2_residual_pred / sigma_pred)
+    P_CDF = 1.0 - stage2_dist.cdf(np.zeros(len(X_test_full_s2)))
     P_Clf = stage2_clf.predict_proba(X_test_full_s2)[:, 1]
     
     final_over_prob = 0.5 * P_CDF + 0.5 * P_Clf
@@ -401,7 +398,7 @@ def train_totals_model():
     stage2_logloss = log_loss(y_test_clf_s2, final_over_prob)
     
     # Calibrated Stage 2
-    stage2_prob_cal = stage2_calibrator.predict(final_over_prob)
+    stage2_prob_cal = stage2_calibrator.predict_proba(final_over_prob.reshape(-1, 1))[:, 1]
     stage2_cal_accuracy = np.mean(y_test_clf_s2 == (stage2_prob_cal >= 0.5)) * 100.0
     stage2_cal_logloss = log_loss(y_test_clf_s2, stage2_prob_cal)
     
@@ -433,13 +430,17 @@ def train_totals_model():
     days_diff_refit = (pd.to_datetime(max_refit_date) - pd.to_datetime(refit_df['Date'])).dt.days
     refit_weights = np.maximum(0.2, np.exp(-best_lambda * days_diff_refit)).values
     
-    print(f"\nRe-fitting totals models on entire historical dataset ({len(refit_df)} matches) using sample weights...")
+    print(f"\nRe-fitting totals models on entire historical dataset ({len(refit_df)} matches) using sample weights with optimal lambda = {best_lambda}...")
     cv_splitter_refit = WalkForwardSeasonSplitter(refit_df['Season'])
     cv_splits_refit = list(cv_splitter_refit.split(refit_df))
     
-    stage1_pace_reg.fit(X_refit_baseline, y_reg_refit_pace, cv_splits_refit, sample_weight=refit_weights)
-    stage1_home_eff_reg.fit(X_refit_baseline, y_reg_refit_home_eff, cv_splits_refit, sample_weight=refit_weights)
-    stage1_away_eff_reg.fit(X_refit_baseline, y_reg_refit_away_eff, cv_splits_refit, sample_weight=refit_weights)
+    print("Parallel re-fitting final Stage 1 regressors on full dataset...", flush=True)
+    stage1_regs_refit = Parallel(n_jobs=3)(
+        delayed(fit_stage1_regressor)(X_refit_baseline, y_target, cv_splits_refit, refit_weights)
+        for y_target in [y_reg_refit_pace, y_reg_refit_home_eff, y_reg_refit_away_eff]
+    )
+    stage1_pace_reg, stage1_home_eff_reg, stage1_away_eff_reg = stage1_regs_refit
+
     stage1_clf.fit(X_refit_baseline, y_clf_refit_s1, cv_splits_refit, sample_weight=refit_weights)
     
     # Construct s1_total_pred for refit_df
@@ -448,14 +449,13 @@ def train_totals_model():
     X_refit_full_s2 = refit_df[selected_full_features + ['s1_total_pred']]
     
     y_residual_refit = y_reg_refit - refit_df['OverUnder'].values
-    stage2_reg.fit(X_refit_full_s2, y_residual_refit, cv_splits_refit, sample_weight=refit_weights)
+    stage2_reg = FastDistributionRegressor()
+    stage2_reg.fit(X_refit_full_s2, y_residual_refit, cv_splits=cv_splits_refit, sample_weight=refit_weights)
     stage2_clf.fit(X_refit_full_s2, y_clf_refit_s2, cv_splits_refit, sample_weight=refit_weights)
     
-    quantile_10.fit(X_refit_full_s2, y_reg_refit, sample_weight=refit_weights)
-    quantile_90.fit(X_refit_full_s2, y_reg_refit, sample_weight=refit_weights)
-    
     # Calculate standard deviation of residuals on refitted full dataset
-    stage2_pred_residual_refit = stage2_reg.predict(X_refit_full_s2)
+    stage2_pred_dist_refit = stage2_reg.pred_dist(X_refit_full_s2)
+    stage2_pred_residual_refit = stage2_pred_dist_refit.mean()
     refit_residuals = y_reg_refit - (refit_df['OverUnder'].values + stage2_pred_residual_refit)
     sigma_residuals_refit = float(np.std(refit_residuals))
     print(f"Re-fitted Totals Residuals Standard Deviation (sigma): {sigma_residuals_refit:.4f}")
@@ -470,8 +470,6 @@ def train_totals_model():
         'stage1_classifier': stage1_clf, # trained on Target_Total > median_total
         'stage2_regressor': stage2_reg, # trained on residual: Target_Total - OverUnder
         'stage2_classifier': stage2_clf, # trained on Target_Total > OverUnder
-        'quantile_10': quantile_10,
-        'quantile_90': quantile_90,
         'stage1_calibrator': stage1_calibrator,
         'stage2_calibrator': stage2_calibrator
     }
@@ -486,6 +484,7 @@ def train_totals_model():
         'baseline_features': selected_baseline_features,
         'full_features': selected_full_features + ['s1_total_pred'],
         'optimal_decay_lambda': float(best_lambda),
+        'optimal_distribution': 'FastDistributionRegressor',
         'median_total': float(median_refit),
         'metrics': {
             'test_june_2026': {
