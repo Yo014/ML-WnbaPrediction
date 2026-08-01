@@ -16,6 +16,14 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 
+class DummyPassThroughModel(BaseEstimator, RegressorMixin, ClassifierMixin):
+    def fit(self, X, y=None, sample_weight=None):
+        return self
+    def predict(self, X):
+        return np.zeros(len(X))
+    def predict_proba(self, X):
+        return np.column_stack([np.ones(len(X))*0.5, np.ones(len(X))*0.5])
+
 class NormalDistributionPrediction:
     """
     Representation of a normal (Gaussian) predictive distribution with mean (loc)

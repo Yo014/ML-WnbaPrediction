@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { parseOddsInputToDecimal } from './UpcomingBets';
 
 export default function KellyCalculatorCard({ predictionResult, homeTeam, awayTeam }) {
   // Bankroll state synced with localStorage (matching UpcomingBets)
@@ -26,8 +27,8 @@ export default function KellyCalculatorCard({ predictionResult, homeTeam, awayTe
   const bookieHomeOdds = predictionResult?.odds?.bookie_home_odds ?? 1.90;
   const bookieAwayOdds = predictionResult?.odds?.bookie_away_odds ?? 1.90;
 
-  const homeOdds = parseFloat(customHomeOdds) > 0 ? parseFloat(customHomeOdds) : bookieHomeOdds;
-  const awayOdds = parseFloat(customAwayOdds) > 0 ? parseFloat(customAwayOdds) : bookieAwayOdds;
+  const homeOdds = parseOddsInputToDecimal(customHomeOdds) || bookieHomeOdds;
+  const awayOdds = parseOddsInputToDecimal(customAwayOdds) || bookieAwayOdds;
 
   const pHomeRaw = 1.0 / homeOdds;
   const pAwayRaw = 1.0 / awayOdds;
@@ -75,8 +76,11 @@ export default function KellyCalculatorCard({ predictionResult, homeTeam, awayTe
 
   // 2. Over / Under Totals Odds & Edges
   const overUnderLine = predictionResult?.odds?.over_under ?? 160.0;
-  const overOdds = parseFloat(customOverOdds) > 0 ? parseFloat(customOverOdds) : 1.91;
-  const underOdds = parseFloat(customUnderOdds) > 0 ? parseFloat(customUnderOdds) : 1.91;
+  const bookieOverOdds = predictionResult?.odds?.bookie_over_odds ?? 1.91;
+  const bookieUnderOdds = predictionResult?.odds?.bookie_under_odds ?? 1.91;
+
+  const overOdds = parseOddsInputToDecimal(customOverOdds) || bookieOverOdds;
+  const underOdds = parseOddsInputToDecimal(customUnderOdds) || bookieUnderOdds;
 
   const pOverRaw = 1.0 / overOdds;
   const pUnderRaw = 1.0 / underOdds;

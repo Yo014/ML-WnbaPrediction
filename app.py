@@ -731,24 +731,18 @@ def _make_prediction_from_features(feature_dict, fd_match):
         predicted_spread = float(MODEL['stage1_regressor'].predict(features_df)[0])
         
     # Predict totals
-    t_baseline_list = TOTAL_METADATA['baseline_features']
-    t_baseline_df = pd.DataFrame([feature_dict])[t_baseline_list]
-    s1_pace = float(TOTAL_MODEL['stage1_pace_regressor'].predict(t_baseline_df)[0])
-    s1_home_eff = float(TOTAL_MODEL['stage1_home_eff_regressor'].predict(t_baseline_df)[0])
-    s1_away_eff = float(TOTAL_MODEL['stage1_away_eff_regressor'].predict(t_baseline_df)[0])
-    s1_total_pred = s1_pace * (s1_home_eff + s1_away_eff) / 100.0
-    
     if fd_match:
-        feature_dict_totals = feature_dict.copy()
-        feature_dict_totals['s1_total_pred'] = s1_total_pred
         t_features_list = TOTAL_METADATA['full_features']
-        t_features_df = pd.DataFrame([feature_dict_totals])[t_features_list]
+        t_features_df = pd.DataFrame([feature_dict])[t_features_list]
         
         t_residual_dist = TOTAL_MODEL['stage2_regressor'].pred_dist(t_features_df)
         t_residual_pred = float(t_residual_dist.mean()[0])
         predicted_total = fd_match['over_under'] + t_residual_pred
     else:
-        predicted_total = s1_total_pred
+        t_baseline_list = TOTAL_METADATA['baseline_features']
+        t_baseline_df = pd.DataFrame([feature_dict])[t_baseline_list]
+        t_dist = TOTAL_MODEL['stage1_regressor'].pred_dist(t_baseline_df)
+        predicted_total = float(t_dist.mean()[0])
         
     return predicted_spread, predicted_total
 
@@ -814,7 +808,7 @@ def get_perturbed_dict(base_dict, category, away_fatigue=0.0):
         d['Away_Three_In_Four'] = 0.0
     return d
 
-def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chief=None, home_injured_list=None, away_injured_list=None, fd_match=None):
+def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chief=None, home_injured_list=None, away_injured_list=None, fd_match=None, custom_odds=None):
     """
     Abstracted WNBA point spread and win probability prediction pipeline.
     Uses squad health metrics, team EMA trends, schedule rest, talent floors, ELO, H2H bias, 
@@ -863,8 +857,8 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
                 
                 missing_usage += usg_pct * 100.0
                 missing_net_rating += min_avg * net_rating
-                missing_pie += min_avg * pie
-                missing_minutes += (min_avg / 200.0) * 100.0
+                missing_pie += pie
+                missing_minutes += min_avg
                 
         return {
             'Missing_Usage_Pct': round(missing_usage, 3),
@@ -958,6 +952,8 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
     if fd_match:
         bookie_home_odds = fd_match['home_odds']
         bookie_away_odds = fd_match['away_odds']
+        bookie_over_odds = fd_match.get('over_odds', 1.90)
+        bookie_under_odds = fd_match.get('under_odds', 1.90)
         closing_spread = fd_match['closing_spread']
         opening_spread = fd_match.get('opening_spread', fd_match['closing_spread'])
         over_under = fd_match['over_under']
@@ -969,10 +965,75 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
     else:
         bookie_home_odds = odds['BookieHomeOdds']
         bookie_away_odds = odds['BookieAwayOdds']
+        bookie_over_odds = 1.90
+        bookie_under_odds = 1.90
         closing_spread = odds['ClosingSpread']
         opening_spread = odds['OpeningSpread']
         over_under = odds['OverUnder']
         prob_home = odds['Prob_Home']
+
+    # Apply custom user overrides if supplied
+    if custom_odds and isinstance(custom_odds, dict):
+        def parse_american_or_decimal(val):
+            if val is None:
+                return None
+            s = str(val).strip()
+            if not s:
+                return None
+            if s.startswith('-'):
+                try:
+                    n = float(s)
+                    return 1.0 + (100.0 / abs(n)) if n < 0 else None
+                except ValueError:
+                    return None
+            if s.startswith('+'):
+                try:
+                    n = float(s[1:])
+                    return 1.0 + (n / 100.0) if n > 0 else None
+                except ValueError:
+                    return None
+            try:
+                n = float(s)
+                if n >= 50.0:
+                    return 1.0 + (n / 100.0)
+                return n if n > 1.0 else None
+            except ValueError:
+                return None
+
+        c_home = parse_american_or_decimal(custom_odds.get('custom_home_odds') or custom_odds.get('home_odds'))
+        if c_home and c_home > 1.0:
+            bookie_home_odds = c_home
+            
+        c_away = parse_american_or_decimal(custom_odds.get('custom_away_odds') or custom_odds.get('away_odds'))
+        if c_away and c_away > 1.0:
+            bookie_away_odds = c_away
+
+        c_over_o = parse_american_or_decimal(custom_odds.get('custom_over_odds') or custom_odds.get('over_odds'))
+        if c_over_o and c_over_o > 1.0:
+            bookie_over_odds = c_over_o
+
+        c_under_o = parse_american_or_decimal(custom_odds.get('custom_under_odds') or custom_odds.get('under_odds'))
+        if c_under_o and c_under_o > 1.0:
+            bookie_under_odds = c_under_o
+
+        c_spread = custom_odds.get('custom_closing_spread') or custom_odds.get('closing_spread')
+        if c_spread is not None and str(c_spread).strip() != '':
+            try:
+                closing_spread = float(c_spread)
+            except (ValueError, TypeError):
+                pass
+
+        c_total = custom_odds.get('custom_over_under') or custom_odds.get('over_under')
+        if c_total is not None and str(c_total).strip() != '':
+            try:
+                over_under = float(c_total)
+            except (ValueError, TypeError):
+                pass
+
+        p_home_raw = 1.0 / bookie_home_odds if bookie_home_odds > 0 else 0.5
+        p_away_raw = 1.0 / bookie_away_odds if bookie_away_odds > 0 else 0.5
+        sum_p = p_home_raw + p_away_raw
+        prob_home = p_home_raw / sum_p if sum_p > 0 else 0.5
         
     # Calculate Market_Disagreement
     if poly_prob_home is not None:
@@ -1150,34 +1211,23 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
             else:
                 home_win_prob = float(cal.predict([[home_win_prob]])[0])
             
-    # Predict totals and over/under probabilities
-    # Compute s1_total_pred first using baseline features (which are in feature_dict)
-    t_baseline_list = TOTAL_METADATA['baseline_features']
-    t_baseline_df = pd.DataFrame([feature_dict])[t_baseline_list]
-    
-    # Decoupled Stage 1 models predictions
-    s1_pace = float(TOTAL_MODEL['stage1_pace_regressor'].predict(t_baseline_df)[0])
-    s1_home_eff = float(TOTAL_MODEL['stage1_home_eff_regressor'].predict(t_baseline_df)[0])
-    s1_away_eff = float(TOTAL_MODEL['stage1_away_eff_regressor'].predict(t_baseline_df)[0])
-    s1_total_pred = s1_pace * (s1_home_eff + s1_away_eff) / 100.0
-    
-    # Add s1_total_pred to feature_dict so it is included in full_features construction
-    feature_dict['s1_total_pred'] = s1_total_pred
-
+    # Predict totals and over/under probabilities using streamlined residual engine
     if fd_match:
         t_features_list = TOTAL_METADATA['full_features']
         t_features_df = pd.DataFrame([feature_dict])[t_features_list]
         
         t_residual_dist = TOTAL_MODEL['stage2_regressor'].pred_dist(t_features_df)
         t_residual_pred = float(t_residual_dist.mean()[0])
-        predicted_total = over_under + t_residual_pred
+        default_line = float(feature_dict.get('OverUnder', 160.0))
+        predicted_total = default_line + t_residual_pred
         
         t_dynamic_sigma = float(t_residual_dist.std()[0])
         t_dynamic_sigma = max(t_dynamic_sigma, 1e-5)
         
-        t_p_cdf = float(1.0 - t_residual_dist.cdf(np.zeros(1))[0])
-        t_p_clf = float(TOTAL_MODEL['stage2_classifier'].predict_proba(t_features_df)[0, 1])
-        over_win_prob = 0.5 * t_p_cdf + 0.5 * t_p_clf
+        # Compute probability relative to active over_under line parameter
+        line_residual = predicted_total - over_under
+        t_p_cdf = float(norm.cdf(line_residual / t_dynamic_sigma))
+        over_win_prob = t_p_cdf
         
         if 'stage2_calibrator' in TOTAL_MODEL and TOTAL_MODEL['stage2_calibrator'] is not None:
             cal = TOTAL_MODEL['stage2_calibrator']
@@ -1186,13 +1236,18 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
             else:
                 over_win_prob = float(cal.predict([[over_win_prob]])[0])
     else:
-        predicted_total = s1_total_pred
-        t_dynamic_sigma = TOTAL_METADATA.get('sigma_residuals', 12.0)
-        t_median_total = TOTAL_METADATA.get('median_total', 160.0)
+        t_baseline_list = TOTAL_METADATA['baseline_features']
+        t_baseline_df = pd.DataFrame([feature_dict])[t_baseline_list]
         
-        t_p_cdf = float(norm.cdf((predicted_total - t_median_total) / t_dynamic_sigma))
-        t_p_clf = float(TOTAL_MODEL['stage1_classifier'].predict_proba(t_baseline_df)[0, 1])
-        over_win_prob = 0.5 * t_p_cdf + 0.5 * t_p_clf
+        t_dist = TOTAL_MODEL['stage1_regressor'].pred_dist(t_baseline_df)
+        predicted_total = float(t_dist.mean()[0])
+        t_dynamic_sigma = float(t_dist.std()[0])
+        t_dynamic_sigma = max(t_dynamic_sigma, 1e-5)
+        
+        # Compute probability relative to active over_under line parameter
+        line_residual = predicted_total - over_under
+        t_p_cdf = float(norm.cdf(line_residual / t_dynamic_sigma))
+        over_win_prob = t_p_cdf
         
         if 'stage1_calibrator' in TOTAL_MODEL and TOTAL_MODEL['stage1_calibrator'] is not None:
             cal = TOTAL_MODEL['stage1_calibrator']
@@ -1244,6 +1299,8 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
         'odds': {
             'bookie_home_odds': bookie_home_odds,
             'bookie_away_odds': bookie_away_odds,
+            'bookie_over_odds': bookie_over_odds,
+            'bookie_under_odds': bookie_under_odds,
             'opening_spread': opening_spread,
             'closing_spread': closing_spread,
             'over_under': over_under,
@@ -1280,6 +1337,15 @@ def predict():
     home_injured_list = data.get('home_injured_players', [])
     away_injured_list = data.get('away_injured_players', [])
     
+    custom_odds = {
+        'custom_home_odds': data.get('custom_home_odds'),
+        'custom_away_odds': data.get('custom_away_odds'),
+        'custom_closing_spread': data.get('custom_closing_spread'),
+        'custom_over_under': data.get('custom_over_under'),
+        'custom_over_odds': data.get('custom_over_odds'),
+        'custom_under_odds': data.get('custom_under_odds')
+    }
+
     try:
         response = make_prediction_for_matchup(
             home_team=home_team,
@@ -1287,7 +1353,8 @@ def predict():
             prediction_date=prediction_date,
             crew_chief=crew_chief,
             home_injured_list=home_injured_list,
-            away_injured_list=away_injured_list
+            away_injured_list=away_injured_list,
+            custom_odds=custom_odds
         )
         return jsonify(response)
     except Exception as e:

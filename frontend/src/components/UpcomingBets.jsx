@@ -246,6 +246,61 @@ function normalCDF(x, mean, std) {
   return Math.round(val * 1000) / 10; // return as percentage, e.g. 52.3
 }
 
+// Helper utilities for American and Decimal odds conversion
+export function parseOddsInputToDecimal(inputVal) {
+  if (inputVal === null || inputVal === undefined) return null;
+  const str = inputVal.toString().trim();
+  if (str === '') return null;
+
+  // Check if negative American odds (e.g. -110, -150, -270)
+  if (str.startsWith('-')) {
+    const val = parseFloat(str);
+    if (!isNaN(val) && val < 0) {
+      return 1.0 + (100.0 / Math.abs(val));
+    }
+  }
+
+  // Check if positive American odds with '+' (e.g. +150, +200)
+  if (str.startsWith('+')) {
+    const val = parseFloat(str.substring(1));
+    if (!isNaN(val) && val > 0) {
+      return 1.0 + (val / 100.0);
+    }
+  }
+
+  const val = parseFloat(str);
+  if (isNaN(val) || val <= 0) return null;
+
+  // If positive number >= 50 (e.g. 150, 200, 110 entered without +), treat as positive American odds
+  if (val >= 50) {
+    return 1.0 + (val / 100.0);
+  }
+
+  // Otherwise treat as standard decimal odds (e.g. 1.91, 2.50)
+  return val;
+}
+
+export function formatOddsDisplay(decimalOdds, format = 'american') {
+  if (!decimalOdds || isNaN(decimalOdds) || decimalOdds <= 1.0) return '';
+  const d = parseFloat(decimalOdds);
+  if (format === 'decimal') {
+    return d.toFixed(2);
+  }
+  // American Format
+  if (d >= 2.0) {
+    const american = Math.round((d - 1.0) * 100);
+    return `+${american}`;
+  } else {
+    const american = Math.round(100.0 / (d - 1.0));
+    return `-${american}`;
+  }
+}
+
+export function formatOddsPlaceholder(decimalVal, format) {
+  if (!decimalVal || isNaN(decimalVal)) return format === 'american' ? '-110' : '1.91';
+  return formatOddsDisplay(decimalVal, format);
+}
+
 export default function UpcomingBets() {
   // Config inputs
   const [initialBankroll, setInitialBankroll] = useState(() => {
@@ -261,6 +316,10 @@ export default function UpcomingBets() {
   const [kellyCap, setKellyCap] = useState(0.10); // bankroll cap fraction, defaulting to 1/10
   const [marketSource, setMarketSource] = useState('polymarket'); // 'polymarket' or 'bookie'
   const [bettingMode, setBettingMode] = useState('spread'); // 'spread' or 'total'
+  const [oddsFormat, setOddsFormat] = useState(() => {
+    const saved = localStorage.getItem('wnba_odds_format');
+    return saved || 'american';
+  });
   const [customOdds, setCustomOdds] = useState(() => {
     const saved = localStorage.getItem('wnba_custom_odds');
     return saved !== null ? JSON.parse(saved) : {};
@@ -269,6 +328,10 @@ export default function UpcomingBets() {
   useEffect(() => {
     localStorage.setItem('wnba_custom_odds', JSON.stringify(customOdds));
   }, [customOdds]);
+
+  useEffect(() => {
+    localStorage.setItem('wnba_odds_format', oddsFormat);
+  }, [oddsFormat]);
 
   const handleCustomOddsChange = (gameKey, teamSide, val) => {
     setCustomOdds(prev => {
@@ -848,6 +911,21 @@ export default function UpcomingBets() {
           </div>
 
           <div className="control-group">
+            <label className="control-label" htmlFor="odds-format-input">Odds Format</label>
+            <select
+              id="odds-format-input"
+              className="select-input"
+              value={oddsFormat}
+              onChange={(e) => setOddsFormat(e.target.value)}
+              disabled={loading || scraping}
+              style={{ width: '100%' }}
+            >
+              <option value="american">American Odds (-110, +150)</option>
+              <option value="decimal">Decimal Odds (1.91, 2.50)</option>
+            </select>
+          </div>
+
+          <div className="control-group">
             <button
               onClick={handleScrape}
               className="select-input"
@@ -901,9 +979,9 @@ export default function UpcomingBets() {
                   <th>Matchup</th>
                   <th style={{ textAlign: 'center' }}>{bettingMode === 'spread' ? 'Model Win Prob (H/A)' : 'Model Over/Under Prob'}</th>
                   <th style={{ textAlign: 'center' }}>
-                    {bettingMode === 'spread'
-                      ? (marketSource === 'polymarket' ? 'Prediction Market Odds (H/A)' : 'Bookmaker Odds (H/A)')
-                      : 'Bookmaker Line / Odds'}
+                    {marketSource === 'polymarket'
+                      ? (bettingMode === 'spread' ? 'Prediction Market Odds (H/A)' : 'Prediction Market Over/Under Price')
+                      : `Bookmaker Line / Odds (${oddsFormat === 'american' ? 'American' : 'Decimal'})`}
                   </th>
                   <th style={{ textAlign: 'center' }}>Recommendation</th>
                   <th style={{ textAlign: 'right' }}>Suggested Flat Wager ({flatWagerPct}%)</th>
@@ -968,17 +1046,17 @@ export default function UpcomingBets() {
                       awayOdds = bet.bookmaker ? bet.bookmaker.away_odds : 1.90;
                       if (custom) {
                         if (custom.home_odds) {
-                          const parsed = parseFloat(custom.home_odds);
-                          if (!isNaN(parsed) && parsed > 0) homeOdds = parsed;
+                          const parsed = parseOddsInputToDecimal(custom.home_odds);
+                          if (parsed && parsed > 1.0) homeOdds = parsed;
                         }
                         if (custom.away_odds) {
-                          const parsed = parseFloat(custom.away_odds);
-                          if (!isNaN(parsed) && parsed > 0) awayOdds = parsed;
+                          const parsed = parseOddsInputToDecimal(custom.away_odds);
+                          if (parsed && parsed > 1.0) awayOdds = parsed;
                         }
                       }
                       const hasCustom = custom && (
-                        (custom.home_odds && !isNaN(parseFloat(custom.home_odds))) ||
-                        (custom.away_odds && !isNaN(parseFloat(custom.away_odds)))
+                        (custom.home_odds && parseOddsInputToDecimal(custom.home_odds) !== null) ||
+                        (custom.away_odds && parseOddsInputToDecimal(custom.away_odds) !== null)
                       );
                       if (hasCustom) {
                         const p_home_raw = 1.0 / homeOdds;
@@ -1031,12 +1109,12 @@ export default function UpcomingBets() {
                     
                     if (custom) {
                       if (custom.over_odds) {
-                        const parsed = parseFloat(custom.over_odds);
-                        if (!isNaN(parsed) && parsed > 0) overOdds = parsed;
+                        const parsed = parseOddsInputToDecimal(custom.over_odds);
+                        if (parsed && parsed > 1.0) overOdds = parsed;
                       }
                       if (custom.under_odds) {
-                        const parsed = parseFloat(custom.under_odds);
-                        if (!isNaN(parsed) && parsed > 0) underOdds = parsed;
+                        const parsed = parseOddsInputToDecimal(custom.under_odds);
+                        if (parsed && parsed > 1.0) underOdds = parsed;
                       }
                     }
                     
@@ -1211,14 +1289,12 @@ export default function UpcomingBets() {
                               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                                   <input
-                                    type="number"
-                                    step="0.01"
-                                    min="1.01"
-                                    placeholder={bet.bookmaker?.home_odds ? bet.bookmaker.home_odds.toFixed(2) : '1.90'}
+                                    type="text"
+                                    placeholder={formatOddsPlaceholder(bet.bookmaker?.home_odds || 1.90, oddsFormat)}
                                     value={customOdds[gameKey]?.home_odds || ''}
                                     onChange={(e) => handleCustomOddsChange(gameKey, 'home_odds', e.target.value)}
                                     style={{
-                                      width: '64px',
+                                      width: oddsFormat === 'american' ? '68px' : '64px',
                                       background: 'rgba(255, 255, 255, 0.05)',
                                       border: '1px solid var(--border-card)',
                                       color: 'var(--color-text-main)',
@@ -1232,14 +1308,12 @@ export default function UpcomingBets() {
                                   />
                                   <span style={{ color: 'var(--color-text-dim)' }}>/</span>
                                   <input
-                                    type="number"
-                                    step="0.01"
-                                    min="1.01"
-                                    placeholder={bet.bookmaker?.away_odds ? bet.bookmaker.away_odds.toFixed(2) : '1.90'}
+                                    type="text"
+                                    placeholder={formatOddsPlaceholder(bet.bookmaker?.away_odds || 1.90, oddsFormat)}
                                     value={customOdds[gameKey]?.away_odds || ''}
                                     onChange={(e) => handleCustomOddsChange(gameKey, 'away_odds', e.target.value)}
                                     style={{
-                                      width: '64px',
+                                      width: oddsFormat === 'american' ? '68px' : '64px',
                                       background: 'rgba(255, 255, 255, 0.05)',
                                       border: '1px solid var(--border-card)',
                                       color: 'var(--color-text-main)',
@@ -1320,14 +1394,12 @@ export default function UpcomingBets() {
                                 </div>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                                   <input
-                                    type="number"
-                                    step="0.01"
-                                    min="1.01"
-                                    placeholder={bet.bookmaker?.over_odds ? bet.bookmaker.over_odds.toFixed(2) : '1.91'}
+                                    type="text"
+                                    placeholder={formatOddsPlaceholder(bet.bookmaker?.over_odds || 1.91, oddsFormat)}
                                     value={customOdds[gameKey]?.over_odds || ''}
                                     onChange={(e) => handleCustomOddsChange(gameKey, 'over_odds', e.target.value)}
                                     style={{
-                                      width: '54px',
+                                      width: oddsFormat === 'american' ? '60px' : '54px',
                                       background: 'rgba(255, 255, 255, 0.05)',
                                       border: '1px solid var(--border-card)',
                                       color: 'var(--color-text-main)',
@@ -1340,14 +1412,12 @@ export default function UpcomingBets() {
                                   />
                                   <span style={{ color: 'var(--color-text-dim)' }}>/</span>
                                   <input
-                                    type="number"
-                                    step="0.01"
-                                    min="1.01"
-                                    placeholder={bet.bookmaker?.under_odds ? bet.bookmaker.under_odds.toFixed(2) : '1.91'}
+                                    type="text"
+                                    placeholder={formatOddsPlaceholder(bet.bookmaker?.under_odds || 1.91, oddsFormat)}
                                     value={customOdds[gameKey]?.under_odds || ''}
                                     onChange={(e) => handleCustomOddsChange(gameKey, 'under_odds', e.target.value)}
                                     style={{
-                                      width: '54px',
+                                      width: oddsFormat === 'american' ? '60px' : '54px',
                                       background: 'rgba(255, 255, 255, 0.05)',
                                       border: '1px solid var(--border-card)',
                                       color: 'var(--color-text-main)',

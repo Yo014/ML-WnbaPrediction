@@ -49,7 +49,20 @@ function App() {
     }
     init();
   }, []);
-  const updatePrediction = async (currentHomeRoster = homeRoster, currentAwayRoster = awayRoster) => {
+  const [customPredictorOdds, setCustomPredictorOdds] = useState({
+    homeOdds: '',
+    awayOdds: '',
+    closingSpread: '',
+    overUnder: '',
+    overOdds: '',
+    underOdds: ''
+  });
+
+  const updatePrediction = async (
+    currentHomeRoster = homeRoster,
+    currentAwayRoster = awayRoster,
+    overrideOdds = customPredictorOdds
+  ) => {
     if (!homeTeam || !awayTeam || homeTeam === awayTeam) return;
 
     setError(null);
@@ -69,7 +82,13 @@ function App() {
           crew_chief: selectedCrewChief,
           prediction_date: predictionDate,
           home_injured_players: homeInjuredList,
-          away_injured_players: awayInjuredList
+          away_injured_players: awayInjuredList,
+          custom_home_odds: overrideOdds.homeOdds || null,
+          custom_away_odds: overrideOdds.awayOdds || null,
+          custom_closing_spread: overrideOdds.closingSpread || null,
+          custom_over_under: overrideOdds.overUnder || null,
+          custom_over_odds: overrideOdds.overOdds || null,
+          custom_under_odds: overrideOdds.underOdds || null
         })
       });
 
@@ -83,6 +102,19 @@ function App() {
       setError("Prediction server returned an error: " + err.message);
     }
   };
+
+  const handleCustomOddsChange = (key, val) => {
+    const updated = { ...customPredictorOdds, [key]: val };
+    setCustomPredictorOdds(updated);
+    updatePrediction(homeRoster, awayRoster, updated);
+  };
+
+  const handleResetCustomOdds = () => {
+    const resetState = { homeOdds: '', awayOdds: '', closingSpread: '', overUnder: '', overOdds: '', underOdds: '' };
+    setCustomPredictorOdds(resetState);
+    updatePrediction(homeRoster, awayRoster, resetState);
+  };
+
   // Sync rosters and predict on team change
   useEffect(() => {
     if (!homeTeam || !awayTeam) return;
@@ -91,6 +123,8 @@ function App() {
       return;
     }
     setError(null);
+    setCustomPredictorOdds({ homeOdds: '', awayOdds: '', closingSpread: '', overUnder: '', overOdds: '', underOdds: '' });
+
     async function loadRostersAndPredict() {
       try {
         const [resHome, resAway] = await Promise.all([
@@ -100,7 +134,6 @@ function App() {
         setHomeRoster(resHome);
         setAwayRoster(resAway);
 
-        // Use local responses directly to avoid race conditions with setting state asynchronously
         const homeInjuredList = resHome.filter(p => p.injured).map(p => p.name);
         const awayInjuredList = resAway.filter(p => p.injured).map(p => p.name);
 
@@ -223,6 +256,9 @@ function App() {
             <BettingOddsCard
               odds={predictionResult?.odds}
               restDiff={predictionResult?.differentials?.rest_diff}
+              customOdds={customPredictorOdds}
+              onCustomOddsChange={handleCustomOddsChange}
+              onResetCustomOdds={handleResetCustomOdds}
             />
 
             <KellyCalculatorCard

@@ -131,13 +131,16 @@ def train_model():
     if test_df.empty:
         raise ValueError("Held-out test set (Date >= 2026-07-01) is empty.")
         
-    # Fill NaNs using the mean of the training-validation set to prevent look-ahead bias and handle scikit-learn estimators
+    # Compute feature_means strictly on train_val_df before imputing test_df and df to prevent look-ahead bias and test-set information leakage
     feature_means = {}
     for col in features:
         mean_val = train_val_df[col].mean()
         if pd.isna(mean_val):
             mean_val = 0.0
         feature_means[col] = float(mean_val)
+
+    # Impute missing values using feature_means calculated strictly from train_val_df
+    for col, mean_val in feature_means.items():
         train_val_df[col] = train_val_df[col].fillna(mean_val)
         test_df[col] = test_df[col].fillna(mean_val)
         df[col] = df[col].fillna(mean_val)

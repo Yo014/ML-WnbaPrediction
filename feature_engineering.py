@@ -456,7 +456,7 @@ def main():
         mask = (
             (df_team_games['Team'] == team) & 
             (df_team_games['Season'] == season) & 
-            (df_team_games['Date_dt'] <= current_date) & 
+            (df_team_games['Date_dt'] < current_date) & 
             (df_team_games['Date_dt'] >= current_date - pd.Timedelta(days=7))
         )
         recent_games = df_team_games[mask]
