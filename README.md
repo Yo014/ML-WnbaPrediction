@@ -11,33 +11,34 @@ This system ingests multi-year historical match box scores (2018–2026, compris
 ```mermaid
 flowchart TD
     subgraph Data Ingestion & Storage
-        A["nba_api / WNBA Stats"] -->|Raw Matches & Player Logs (2018-2026)| D["SQLite Database: wnba.db"]
-        B["scrape_combined.py / Referees & Inactives"] -->|Officiating Crews & Box Score Inactives| D
-        C["scrape_polymarket.py & fanduel_odds.py"] -->|Live Odds & Market Contracts| D
-        P["populate_db.py"] -->|Full Pipeline Seed & Sync| D
+        A["nba_api / WNBA Stats"] -->|"Raw Matches & Player Logs (2018-2026)"| D["SQLite Database: wnba.db"]
+        B["scrape_combined.py / Referees & Inactives"] -->|"Officiating Crews & Box Score Inactives"| D
+        C["scrape_polymarket.py & fanduel_odds.py"] -->|"Live Odds & Market Contracts"| D
+        P["populate_db.py"] -->|"Full Pipeline Seed & Sync"| D
     end
 
     subgraph Feature Engineering & Processing
         D --> E["data_processing.py"]
-        E -->|Standardize Names, Possessions, Pace| F["build_squad_health.py"]
-        F -->|Dynamic Inactive Roster Metrics| G["feature_engineering.py"]
-        G -->|Rolling EMAs, H2H Bias, Rest & Fatigue| H["ml_ready_data.csv"]
+        E -->|"Standardize Names, Possessions, Pace"| F["build_squad_health.py"]
+        F -->|"Dynamic Inactive Roster Metrics"| G["feature_engineering.py"]
+        G -->|"Rolling EMAs, H2H Bias, Rest & Fatigue"| H["ml_ready_data.csv"]
     end
 
     subgraph Dual-Model Machine Learning Pipeline
         H --> I["train_model.py / Spread Model"]
         H --> J["train_totals_model.py / Totals Model"]
         
-        I -->|Walk-Forward Stacking & Residuals| K["wnba_spread_model.pkl & model_metadata.json"]
-        J -->|Decoupled Pace-Efficiency Stacking| L["wnba_total_model.pkl & total_model_metadata.json"]
+        I -->|"Walk-Forward Stacking & Residuals"| K["wnba_spread_model.pkl & model_metadata.json"]
+        J -->|"Decoupled Pace-Efficiency Stacking"| L["wnba_total_model.pkl & total_model_metadata.json"]
         
-        K & L --> M["predict.py / Inference & Calibration"]
+        K --> M["predict.py / Inference & Calibration"]
+        L --> M
     end
 
     subgraph Backend & Simulation Services
         M --> N["Flask API Server: app.py"]
         H --> O["simulate_season.py"]
-        O -->|Monte Carlo Betting & Standings Sim| N
+        O -->|"Monte Carlo Betting & Standings Sim"| N
     end
 
     subgraph Glassmorphic Frontend Dashboard
