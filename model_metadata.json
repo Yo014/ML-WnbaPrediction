@@ -1,34 +1,34 @@
 {
-    "training_timestamp": "2026-08-01T10:57:08.042938",
+    "training_timestamp": "2026-08-10T12:56:54.415470",
     "feature_means": {
-        "Home_Offensive_Rating_EMA_5": 100.0336856509115,
-        "Home_Defensive_Rating_EMA_5": 100.10078293560446,
-        "Home_Offensive_Rating_EMA_10": 99.86919158520759,
-        "Home_Defensive_Rating_EMA_10": 99.88227149125223,
-        "Away_Offensive_Rating_EMA_5": 99.8923138159785,
-        "Away_Defensive_Rating_EMA_5": 100.0258322263742,
-        "Away_Offensive_Rating_EMA_10": 99.72360812280073,
-        "Away_Defensive_Rating_EMA_10": 99.88772005953957,
-        "Home_Net_Rating_EMA_5": -0.06709728469295072,
-        "Away_Net_Rating_EMA_5": -0.13351841039571288,
-        "Home_Net_Rating_EMA_10": -0.013079906044637078,
-        "Away_Net_Rating_EMA_10": -0.16411193673885563,
-        "Home_eFG%_EMA_5": 0.49515515901966556,
-        "Home_TOV%_EMA_5": 0.15538298144513105,
-        "Home_ORB%_EMA_5": 0.24214163726019705,
-        "Home_FT_Rate_EMA_5": 0.21629013086931356,
-        "Home_eFG%_EMA_10": 0.4944198636920723,
-        "Home_TOV%_EMA_10": 0.15547558632717898,
-        "Home_ORB%_EMA_10": 0.24177516839731455,
-        "Home_FT_Rate_EMA_10": 0.21645497569494734,
-        "Away_eFG%_EMA_5": 0.49496401281997615,
-        "Away_TOV%_EMA_5": 0.15519981816170428,
-        "Away_ORB%_EMA_5": 0.24112377290550607,
-        "Away_FT_Rate_EMA_5": 0.21542386385930914,
-        "Away_eFG%_EMA_10": 0.49384557517918526,
-        "Away_TOV%_EMA_10": 0.15532044440207843,
-        "Away_ORB%_EMA_10": 0.24096830352283055,
-        "Away_FT_Rate_EMA_10": 0.216202908822791,
+        "Home_Offensive_Rating_EMA_5": 100.02959311902646,
+        "Home_Defensive_Rating_EMA_5": 100.10487546748952,
+        "Home_Offensive_Rating_EMA_10": 99.86509905332254,
+        "Home_Defensive_Rating_EMA_10": 99.88636402313729,
+        "Away_Offensive_Rating_EMA_5": 99.88762466228981,
+        "Away_Defensive_Rating_EMA_5": 100.03053195567193,
+        "Away_Offensive_Rating_EMA_10": 99.71891896911204,
+        "Away_Defensive_Rating_EMA_10": 99.89241978883729,
+        "Home_Net_Rating_EMA_5": -0.07528234846305215,
+        "Away_Net_Rating_EMA_5": -0.14290729338212002,
+        "Home_Net_Rating_EMA_10": -0.02126496981473838,
+        "Away_Net_Rating_EMA_10": -0.17350081972526288,
+        "Home_eFG%_EMA_5": 0.4951415172467154,
+        "Home_TOV%_EMA_5": 0.15538843815431108,
+        "Home_ORB%_EMA_5": 0.24212799548724687,
+        "Home_FT_Rate_EMA_5": 0.2162764890963634,
+        "Home_eFG%_EMA_10": 0.4944062219191221,
+        "Home_TOV%_EMA_10": 0.15548104303635904,
+        "Home_ORB%_EMA_10": 0.2417615266243644,
+        "Home_FT_Rate_EMA_10": 0.21644133392199716,
+        "Away_eFG%_EMA_5": 0.4949483823076805,
+        "Away_TOV%_EMA_5": 0.15520607741702852,
+        "Away_ORB%_EMA_5": 0.2411081423932104,
+        "Away_FT_Rate_EMA_5": 0.21540821572099847,
+        "Away_eFG%_EMA_10": 0.4938299446668897,
+        "Away_TOV%_EMA_10": 0.15532670365740267,
+        "Away_ORB%_EMA_10": 0.2409526730105349,
+        "Away_FT_Rate_EMA_10": 0.2161872606844803,
         "Home_Days_Rest": 3.046286329386437,
         "Home_Back_To_Back": 0.023681377825618945,
         "Home_Three_In_Four": 0.02583423035522067,
@@ -38,46 +38,46 @@
         "Rest_Diff": 0.19967707212055974,
         "Home_Travel_Miles_7d": 1568.0624059676904,
         "Home_Timezone_Changes_7d": 1.6404736275565124,
-        "Home_Fatigue_Score": 0.3398161010406984,
-        "Away_Travel_Miles_7d": 1551.4790337148975,
+        "Home_Fatigue_Score": 0.33981610104069837,
+        "Away_Travel_Miles_7d": 1551.4790337148972,
         "Away_Timezone_Changes_7d": 1.6716899892357373,
         "Away_Fatigue_Score": 0.3781766541135383,
-        "Travel_Miles_Diff": 16.583372252793033,
+        "Travel_Miles_Diff": 16.583372252793037,
         "Fatigue_Score_Diff": -0.0383605530728399,
-        "Home_Talent_Floor": 17.632804090419807,
-        "Away_Talent_Floor": 17.667475780409042,
-        "Talent_Floor_Diff": -0.034671689989235734,
-        "Home_Missing_Usage_Pct": 11.419214208826697,
-        "Away_Missing_Usage_Pct": 9.511840688912809,
-        "Home_Missing_Net_Rating": -17.551157158234663,
-        "Away_Missing_Net_Rating": -8.358100107642628,
-        "Home_Missing_PIE": 1.1004671689989236,
-        "Away_Missing_PIE": 0.9176388589881593,
-        "Home_Missing_Minutes_Pct": 5.718487621097955,
-        "Away_Missing_Minutes_Pct": 4.653310010764263,
+        "Home_Talent_Floor": 17.517578040904198,
+        "Away_Talent_Floor": 17.52627556512379,
+        "Talent_Floor_Diff": -0.008697524219590967,
+        "Home_Missing_Usage_Pct": 11.260064585575888,
+        "Away_Missing_Usage_Pct": 9.246770721205598,
+        "Home_Missing_Net_Rating": 0.0,
+        "Away_Missing_Net_Rating": 0.0,
+        "Home_Missing_PIE": 0.0,
+        "Away_Missing_PIE": 0.0,
+        "Home_Missing_Minutes_Pct": 5.675296017222821,
+        "Away_Missing_Minutes_Pct": 4.6612217438105485,
         "Home_Injured_Players_Count": 0.6280947255113025,
         "Away_Injured_Players_Count": 0.5161463939720129,
-        "Missing_Usage_Diff": 1.9073735199138862,
-        "Net_Rating_Diff_5": 0.06642112570276215,
-        "eFG%_Diff_5": 0.0001911461996893991,
-        "TOV%_Diff_5": 0.00018316328342678616,
-        "ORB%_Diff_5": 0.0010178643546909928,
-        "FT_Rate_Diff_5": 0.0008662670100044316,
-        "Net_Rating_Diff_10": 0.1510320306942186,
-        "eFG%_Diff_10": 0.0005742885128870203,
-        "TOV%_Diff_10": 0.000155141925100596,
-        "ORB%_Diff_10": 0.0008068648744839827,
-        "FT_Rate_Diff_10": 0.00025206687215634173,
-        "H2H_Bias": 0.49396432415808084,
-        "Ref_Pts_EMA": 163.41339960541566,
-        "Ref_Fouls_EMA": 35.923017318705774,
-        "Ref_HomeWin_EMA": 0.5460046344484872,
-        "BookieHomeOdds": 1.9074273412271259,
-        "BookieAwayOdds": 2.601571582346609,
-        "OpeningSpread": -1.757534983853606,
-        "ClosingSpread": -1.7634553283100107,
-        "OverUnder": 162.10710441334768,
-        "Prob_Home": 0.55273567761644,
+        "Missing_Usage_Diff": 2.0132938643702905,
+        "Net_Rating_Diff_5": 0.06762494491906787,
+        "eFG%_Diff_5": 0.0001931349390348668,
+        "TOV%_Diff_5": 0.0001823607372825828,
+        "ORB%_Diff_5": 0.0010198530940364607,
+        "FT_Rate_Diff_5": 0.0008682733753649413,
+        "Net_Rating_Diff_10": 0.1522358499105245,
+        "eFG%_Diff_10": 0.0005762772522324882,
+        "TOV%_Diff_10": 0.0001543393789563922,
+        "ORB%_Diff_10": 0.0008088536138294507,
+        "FT_Rate_Diff_10": 0.00025407323751685103,
+        "H2H_Bias": 0.4939643241580809,
+        "Ref_Pts_EMA": 163.1195250092358,
+        "Ref_Fouls_EMA": 36.184882143884984,
+        "Ref_HomeWin_EMA": 0.5613436888000931,
+        "BookieHomeOdds": 1.944940796555436,
+        "BookieAwayOdds": 2.575,
+        "OpeningSpread": -1.6046824542518838,
+        "ClosingSpread": -1.6396663078579117,
+        "OverUnder": 162.04494079655544,
+        "Prob_Home": 0.5489294701423034,
         "Market_Disagreement": 0.0
     },
     "features": [
@@ -125,13 +125,10 @@
         "Talent_Floor_Diff",
         "Home_Missing_Usage_Pct",
         "Away_Missing_Usage_Pct",
-        "Home_Missing_Net_Rating",
-        "Away_Missing_Net_Rating",
-        "Home_Missing_PIE",
-        "Away_Missing_PIE",
         "Home_Missing_Minutes_Pct",
         "Away_Missing_Minutes_Pct",
         "Home_Injured_Players_Count",
+        "Away_Injured_Players_Count",
         "Missing_Usage_Diff",
         "Net_Rating_Diff_5",
         "eFG%_Diff_5",
@@ -148,11 +145,8 @@
         "Ref_Fouls_EMA",
         "Ref_HomeWin_EMA",
         "BookieHomeOdds",
-        "BookieAwayOdds",
         "OpeningSpread",
-        "ClosingSpread",
-        "OverUnder",
-        "Prob_Home"
+        "OverUnder"
     ],
     "baseline_features": [
         "Home_Offensive_Rating_EMA_5",
@@ -199,13 +193,10 @@
         "Talent_Floor_Diff",
         "Home_Missing_Usage_Pct",
         "Away_Missing_Usage_Pct",
-        "Home_Missing_Net_Rating",
-        "Away_Missing_Net_Rating",
-        "Home_Missing_PIE",
-        "Away_Missing_PIE",
         "Home_Missing_Minutes_Pct",
         "Away_Missing_Minutes_Pct",
         "Home_Injured_Players_Count",
+        "Away_Injured_Players_Count",
         "Missing_Usage_Diff",
         "Net_Rating_Diff_5",
         "eFG%_Diff_5",
@@ -267,13 +258,10 @@
         "Talent_Floor_Diff",
         "Home_Missing_Usage_Pct",
         "Away_Missing_Usage_Pct",
-        "Home_Missing_Net_Rating",
-        "Away_Missing_Net_Rating",
-        "Home_Missing_PIE",
-        "Away_Missing_PIE",
         "Home_Missing_Minutes_Pct",
         "Away_Missing_Minutes_Pct",
         "Home_Injured_Players_Count",
+        "Away_Injured_Players_Count",
         "Missing_Usage_Diff",
         "Net_Rating_Diff_5",
         "eFG%_Diff_5",
@@ -290,195 +278,22 @@
         "Ref_Fouls_EMA",
         "Ref_HomeWin_EMA",
         "BookieHomeOdds",
-        "BookieAwayOdds",
         "OpeningSpread",
-        "ClosingSpread",
-        "OverUnder",
-        "Prob_Home"
+        "OverUnder"
     ],
-    "optimal_decay_lambda": 0.0005,
+    "optimal_decay_lambda": 0.001,
     "metrics": {
         "test_june_2026": {
-            "market_mae": 9.95774647887324,
-            "market_accuracy": 60.56338028169014,
-            "market_logloss": 0.6559107496670742,
-            "stage1_mae": 9.355019349502555,
-            "stage1_accuracy": 63.38028169014085,
-            "stage1_logloss": 0.6389207420851005,
-            "stage1_calibrated_accuracy": 60.56338028169014,
-            "stage1_calibrated_logloss": 0.6573223489038003,
-            "stage2_mae": 9.500925092075006,
-            "stage2_accuracy": 63.38028169014085,
-            "stage2_logloss": 0.642651286091452,
-            "stage2_calibrated_accuracy": 63.38028169014085,
-            "stage2_calibrated_logloss": 0.6674044907274264
+            "market_mae": 9.408163265306122,
+            "market_accuracy": 63.26530612244898,
+            "market_logloss": 0.630302291222609,
+            "stage1_mae": 9.006249855608093,
+            "stage1_accuracy": 67.3469387755102,
+            "stage1_logloss": 0.6201684337581075,
+            "stage2_mae": 9.126931531861588,
+            "stage2_accuracy": 67.3469387755102,
+            "stage2_logloss": 0.6098980585773769
         }
     },
-    "sigma_residuals": 12.11450585459211,
-    "feature_importances": {
-        "regressor": [
-            [
-                "BookieHomeOdds",
-                0.1556563526391983
-            ],
-            [
-                "OpeningSpread",
-                0.07700474560260773
-            ],
-            [
-                "Net_Rating_Diff_10",
-                0.052023995667696
-            ],
-            [
-                "Talent_Floor_Diff",
-                0.023539088666439056
-            ],
-            [
-                "Away_Offensive_Rating_EMA_10",
-                0.01753736287355423
-            ],
-            [
-                "Home_Talent_Floor",
-                0.01739203929901123
-            ],
-            [
-                "Away_Net_Rating_EMA_10",
-                0.01503366231918335
-            ],
-            [
-                "eFG%_Diff_10",
-                0.014892961829900742
-            ],
-            [
-                "Home_Offensive_Rating_EMA_10",
-                0.014668086543679237
-            ],
-            [
-                "Home_Missing_Minutes_Pct",
-                0.014590338803827763
-            ],
-            [
-                "Away_Missing_Net_Rating",
-                0.014584580436348915
-            ],
-            [
-                "Away_Defensive_Rating_EMA_10",
-                0.014581345021724701
-            ],
-            [
-                "Net_Rating_Diff_5",
-                0.014462657272815704
-            ],
-            [
-                "eFG%_Diff_5",
-                0.014205850660800934
-            ],
-            [
-                "Home_Net_Rating_EMA_5",
-                0.013624102808535099
-            ],
-            [
-                "Away_eFG%_EMA_10",
-                0.013589922338724136
-            ],
-            [
-                "Ref_Fouls_EMA",
-                0.01348387822508812
-            ],
-            [
-                "Away_Days_Rest",
-                0.013217602856457233
-            ],
-            [
-                "Away_Talent_Floor",
-                0.013042501173913479
-            ],
-            [
-                "Away_FT_Rate_EMA_5",
-                0.012800364755094051
-            ]
-        ],
-        "classifier": [
-            [
-                "Net_Rating_Diff_10",
-                0.0971093475818634
-            ],
-            [
-                "Talent_Floor_Diff",
-                0.03388171270489693
-            ],
-            [
-                "OpeningSpread",
-                0.03014528565108776
-            ],
-            [
-                "eFG%_Diff_10",
-                0.02041592262685299
-            ],
-            [
-                "Away_Net_Rating_EMA_10",
-                0.020381301641464233
-            ],
-            [
-                "Home_Missing_PIE",
-                0.019610695540905
-            ],
-            [
-                "Away_ORB%_EMA_5",
-                0.019370192661881447
-            ],
-            [
-                "Net_Rating_Diff_5",
-                0.0190986767411232
-            ],
-            [
-                "Away_ORB%_EMA_10",
-                0.0166988056153059
-            ],
-            [
-                "Home_Net_Rating_EMA_5",
-                0.016312014311552048
-            ],
-            [
-                "Rest_Diff",
-                0.01600641943514347
-            ],
-            [
-                "Away_Offensive_Rating_EMA_5",
-                0.01589745469391346
-            ],
-            [
-                "Away_eFG%_EMA_5",
-                0.01589682511985302
-            ],
-            [
-                "Away_Defensive_Rating_EMA_5",
-                0.01587364450097084
-            ],
-            [
-                "FT_Rate_Diff_10",
-                0.015361311845481396
-            ],
-            [
-                "Missing_Usage_Diff",
-                0.015318742953240871
-            ],
-            [
-                "Ref_Fouls_EMA",
-                0.015300371684134007
-            ],
-            [
-                "Home_TOV%_EMA_10",
-                0.015174474567174911
-            ],
-            [
-                "Away_FT_Rate_EMA_5",
-                0.01489432342350483
-            ],
-            [
-                "Away_Offensive_Rating_EMA_10",
-                0.014846992678940296
-            ]
-        ]
-    }
+    "sigma_residuals": 12.060923395013566
 }

@@ -32,31 +32,49 @@ def scrape_injuries():
     headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
     
     print(f"Scraping injuries from {url}...")
-    r = requests.get(url, headers=headers, verify=False)
-    soup = BeautifulSoup(r.text, 'html.parser')
-    
     injuries = []
-    for table in soup.find_all('table'):
-        heading = table.find_previous(class_='Table__Title')
-        if not heading:
-            heading = table.find_previous(['h4', 'h3', 'h2', 'h1'])
-        team_name = heading.text.strip() if heading else 'Unknown'
-        canonical_team = clean_team_name(team_name)
+    try:
+        r = requests.get(url, headers=headers, verify=False, timeout=5)
+        soup = BeautifulSoup(r.text, 'html.parser')
         
-        for row in table.find_all('tr')[1:]:
-            cols = row.find_all('td')
-            if not cols:
-                continue
-            player_name = cols[0].text.strip()
-            status = cols[3].text.strip() if len(cols) > 3 else "Out"
+        for table in soup.find_all('table'):
+            heading = table.find_previous(class_='Table__Title')
+            if not heading:
+                heading = table.find_previous(['h4', 'h3', 'h2', 'h1'])
+            team_name = heading.text.strip() if heading else 'Unknown'
+            canonical_team = clean_team_name(team_name)
             
-            injuries.append({
-                'Team': canonical_team,
-                'Player': player_name,
-                'Status': status
-            })
-            
-    print(f"Successfully scraped {len(injuries)} active injuries.")
+            for row in table.find_all('tr')[1:]:
+                cols = row.find_all('td')
+                if not cols:
+                    continue
+                player_name = cols[0].text.strip()
+                status = cols[3].text.strip() if len(cols) > 3 else "Out"
+                
+                injuries.append({
+                    'Team': canonical_team,
+                    'Player': player_name,
+                    'Status': status
+                })
+                
+        print(f"Successfully scraped {len(injuries)} active injuries.")
+    except Exception as e:
+        print(f"Warning: Live injury scraping failed ({e}). Falling back to database injuries table...")
+        try:
+            conn = sqlite3.connect("wnba.db")
+            cursor = conn.cursor()
+            cursor.execute("SELECT Team, Player, InjuryStatus FROM injuries")
+            for row in cursor.fetchall():
+                injuries.append({
+                    'Team': clean_team_name(row[0]),
+                    'Player': row[1],
+                    'Status': row[2]
+                })
+            conn.close()
+            print(f"Loaded {len(injuries)} injury records from database.")
+        except Exception as db_err:
+            print(f"Warning: Failed to load backup injuries from database: {db_err}")
+
     return injuries
 
 def build_squad_health():

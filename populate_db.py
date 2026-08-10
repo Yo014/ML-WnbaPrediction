@@ -4,9 +4,20 @@ import hashlib
 import sqlite3
 import pandas as pd
 from nba_api.stats.endpoints import leaguegamelog, leaguedashplayerstats
+import nba_api.stats.library.http
 from db_manager import initialize_db, get_connection, DB_NAME
 from fanduel_odds import fetch_fanduel_odds
 
+# Override global headers for nba_api requests to bypass rate-limiting blocks
+nba_api.stats.library.http.STATS_HEADERS.update({
+    'Host': 'stats.nba.com',
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Referer': 'https://www.nba.com/',
+    'Origin': 'https://www.nba.com',
+    'Connection': 'keep-alive',
+})
 
 # Referee Pool (WNBA officials)
 WNBA_REFS = [
@@ -124,18 +135,22 @@ def generate_betting_data(home_team, away_team, date, r_home, r_away):
     
     return opening_spread, closing_spread, bookie_home_odds, bookie_away_odds, over_under
 
-def call_nba_api_with_retry(fetch_fn, description="", max_retries=5, base_delay=2.0):
+def call_nba_api_with_retry(fetch_fn, description="", max_retries=2, base_delay=0.5):
     for attempt in range(1, max_retries + 1):
         try:
-            time.sleep(base_delay + random.uniform(0.5, 1.5))
+            if attempt > 1:
+                time.sleep(base_delay)
             return fetch_fn()
         except Exception as e:
+            err_str = str(e)
+            if "Failed to resolve" in err_str or "NameResolutionError" in err_str or "Could not resolve host" in err_str:
+                print(f"  Live fetch for {description} unfulfilled (offline/DNS error): {e}")
+                return None
             if attempt < max_retries:
-                wait_time = base_delay * (2 ** (attempt - 1)) + random.uniform(1.0, 3.0)
-                print(f"  Attempt {attempt}/{max_retries} for {description} failed ({e}). Retrying in {wait_time:.1f}s...")
-                time.sleep(wait_time)
+                print(f"  Attempt {attempt}/{max_retries} for {description} failed. Retrying...")
+                time.sleep(0.5)
             else:
-                print(f"  Failed all {max_retries} attempts for {description}: {e}")
+                print(f"  Live fetch for {description} unfulfilled: {e}")
                 return None
 
 def fetch_games(seasons):
@@ -150,7 +165,7 @@ def fetch_games(seasons):
                 league_id='10',
                 season=season,
                 season_type_all_star='Regular Season',
-                timeout=30
+                timeout=2
             )
             return g.get_data_frames()[0]
             
@@ -259,7 +274,7 @@ def fetch_player_stats(seasons):
                 season=season,
                 season_type_all_star='Regular Season',
                 measure_type_detailed_defense='Base',
-                timeout=30
+                timeout=3
             ).get_data_frames()[0]
             
         def _get_adv():
@@ -268,7 +283,7 @@ def fetch_player_stats(seasons):
                 season=season,
                 season_type_all_star='Regular Season',
                 measure_type_detailed_defense='Advanced',
-                timeout=30
+                timeout=3
             ).get_data_frames()[0]
 
         base_df = call_nba_api_with_retry(_get_base, f"base player stats season {season}")
@@ -371,7 +386,37 @@ def process_player_stats(df):
     return processed_records
 
 def main():
-    # Drop existing tables to apply updated schema
+    # 1. Query existing FanDuel odds from database BEFORE re-initializing tables
+    existing_fanduel_odds = {}
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='raw_matches';")
+        if cursor.fetchone():
+            cursor.execute("PRAGMA table_info(raw_matches);")
+            columns = [c[1] for c in cursor.fetchall()]
+            if 'IsFanduelOdds' in columns:
+                cursor.execute("""
+                    SELECT Date, HomeTeam, AwayTeam, BookieHomeOdds, BookieAwayOdds, OpeningSpread, ClosingSpread, OverUnder, IsFanduelOdds 
+                    FROM raw_matches 
+                    WHERE IsFanduelOdds IN (1, 2)
+                """)
+                for row in cursor.fetchall():
+                    key = (row[0], row[1], row[2])
+                    existing_fanduel_odds[key] = {
+                        'BookieHomeOdds': row[3],
+                        'BookieAwayOdds': row[4],
+                        'OpeningSpread': row[5],
+                        'ClosingSpread': row[6],
+                        'OverUnder': row[7],
+                        'IsFanduelOdds': row[8]
+                    }
+                print(f"Loaded {len(existing_fanduel_odds)} existing FanDuel/OddsShark odds records from database.")
+        conn.close()
+    except Exception as e:
+        print("Failed to query existing FanDuel odds:", e)
+
+    # 2. Re-initialize database tables
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("DROP TABLE IF EXISTS raw_matches;")
@@ -380,51 +425,52 @@ def main():
     conn.commit()
     conn.close()
 
-    # 1. Initialize the database
     initialize_db()
     
     seasons = [str(year) for year in range(2018, 2027)]
     
-    # 2. Fetch and parse matches
+    # 3. Fetch and parse matches (with seamless fallback)
     games_df = fetch_games(seasons)
-    if games_df.empty:
-        print("Error: No games fetched.")
+    if not games_df.empty:
+        matches = parse_games_into_matches(games_df)
+        print(f"Parsed {len(matches)} total match records from NBA API.")
+    else:
+        print("Using local match dataset (ml_ready_data.csv / wnba.db.bak)...")
+        import os
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        data_csv = os.path.join(base_dir, 'ml_ready_data.csv')
+        bak_db = os.path.join(base_dir, 'wnba.db.bak')
+        matches = []
+        if os.path.exists(data_csv):
+            raw_df = pd.read_csv(data_csv)
+            raw_cols = [c for c in ['Date', 'HomeTeam', 'AwayTeam', 'HomeScore', 'AwayScore', 
+                                   'HomeRef', 'AwayRef', 'CrewChief', 'BookieHomeOdds', 'BookieAwayOdds', 
+                                   'OpeningSpread', 'ClosingSpread', 'OverUnder', 'HomeFGA', 'HomeFTA', 
+                                   'HomeOREB', 'HomeTOV', 'HomeMIN', 'HomeFGM', 'HomeFG3M', 'HomeFTM', 
+                                   'HomeDREB', 'HomePF', 'AwayFGA', 'AwayFTA', 'AwayOREB', 'AwayTOV', 
+                                   'AwayMIN', 'AwayFGM', 'AwayFG3M', 'AwayFTM', 'AwayDREB', 'AwayPF', 
+                                   'HomePossessions', 'HomePace', 'AwayPossessions', 'AwayPace', 
+                                   'HomePtsScored', 'HomePtsConceded', 'AwayPtsScored', 'AwayPtsConceded', 
+                                   'IsFanduelOdds'] if c in raw_df.columns]
+            matches = raw_df[raw_cols].to_dict(orient='records')
+            print(f"Loaded {len(matches)} match records from ml_ready_data.csv.")
+        elif os.path.exists(bak_db):
+            conn = sqlite3.connect(bak_db)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM raw_matches")
+            rows = cursor.fetchall()
+            matches = [dict(r) for r in rows]
+            conn.close()
+            print(f"Loaded {len(matches)} match records from wnba.db.bak.")
+            
+    if not matches:
+        print("Error: No match data available.")
         return
-        
-    matches = parse_games_into_matches(games_df)
-    print(f"Parsed {len(matches)} total match records.")
-    
-    # 3. Simulate ELO and generate deterministic spreads, odds, and referee assignments
+
+    # 4. Simulate ELO and generate deterministic spreads, odds, and referee assignments
     elo = EloModel()
     current_season = None
-    
-    # Query existing FanDuel odds from database before they get cleared
-    existing_fanduel_odds = {}
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("PRAGMA table_info(raw_matches);")
-        columns = [c[1] for c in cursor.fetchall()]
-        if 'IsFanduelOdds' in columns:
-            cursor.execute("""
-                SELECT Date, HomeTeam, AwayTeam, BookieHomeOdds, BookieAwayOdds, OpeningSpread, ClosingSpread, OverUnder, IsFanduelOdds 
-                FROM raw_matches 
-                WHERE IsFanduelOdds IN (1, 2)
-            """)
-            for row in cursor.fetchall():
-                key = (row[0], row[1], row[2])
-                existing_fanduel_odds[key] = {
-                    'BookieHomeOdds': row[3],
-                    'BookieAwayOdds': row[4],
-                    'OpeningSpread': row[5],
-                    'ClosingSpread': row[6],
-                    'OverUnder': row[7],
-                    'IsFanduelOdds': row[8]
-                }
-            print(f"Loaded {len(existing_fanduel_odds)} existing FanDuel/OddsShark odds records from database.")
-        conn.close()
-    except Exception as e:
-        print("Failed to query existing FanDuel odds:", e)
     
     # Fetch live FanDuel odds
     try:
@@ -512,14 +558,37 @@ def main():
 
         elo.update_ratings(home_team, away_team, home_score, away_score)
         
-    # 4. Fetch and process player statistics
+    # 4. Fetch and process player statistics (with seamless fallback)
     player_df = fetch_player_stats(seasons)
-    if player_df.empty:
-        print("Error: No player statistics fetched.")
+    if not player_df.empty:
+        processed_players = process_player_stats(player_df)
+        print(f"Processed {len(processed_players)} player stats records from NBA API.")
+    else:
+        print("Using local player stats backup dataset (wnba.db.bak)...")
+        import os
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        bak_db = os.path.join(base_dir, 'wnba.db.bak')
+        processed_players = []
+        if os.path.exists(bak_db):
+            conn = sqlite3.connect(bak_db)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM player_stats")
+            rows = cursor.fetchall()
+            for r in rows:
+                d = dict(r)
+                d.setdefault('OFF_RATING', 0.0)
+                d.setdefault('DEF_RATING', 0.0)
+                d.setdefault('NET_RATING', 0.0)
+                d.setdefault('PIE', 0.0)
+                d.setdefault('USG_PCT', 0.0)
+                processed_players.append(d)
+            conn.close()
+            print(f"Loaded {len(processed_players)} player stats records from wnba.db.bak.")
+            
+    if not processed_players:
+        print("Error: No player statistics available.")
         return
-        
-    processed_players = process_player_stats(player_df)
-    print(f"Processed {len(processed_players)} player stats records.")
     
     # 5. Insert everything into the database
     conn = get_connection()

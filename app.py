@@ -2204,6 +2204,368 @@ def get_upcoming_bets():
         return jsonify({'error': str(e)}), 500
 
 
+def apply_db_custom_lines(df):
+    """
+    Merges custom Over/Under lines from raw_matches in wnba.db onto the dataset,
+    ensuring any custom bookmaker lines inputted by the user or live bookie feeds are prioritized.
+    """
+    try:
+        if not os.path.exists(DB_NAME):
+            return df
+        conn = sqlite3.connect(DB_NAME)
+        db_raw = pd.read_sql_query("SELECT Date, HomeTeam, AwayTeam, OverUnder AS DB_OverUnder FROM raw_matches WHERE OverUnder IS NOT NULL AND OverUnder > 0", conn)
+        conn.close()
+        
+        if db_raw.empty:
+            return df
+            
+        merged = pd.merge(df, db_raw, on=['Date', 'HomeTeam', 'AwayTeam'], how='left')
+        merged['OverUnder'] = np.where(merged['DB_OverUnder'].notna() & (merged['DB_OverUnder'] > 0), merged['DB_OverUnder'], merged['OverUnder'])
+        merged = merged.drop(columns=['DB_OverUnder'])
+        return merged
+    except Exception as e:
+        print("Error merging DB custom lines:", e)
+        return df
+
+
+@app.route('/api/team_totals', methods=['GET'])
+def get_team_totals():
+    """
+    Returns team totals metrics for all 15 WNBA franchises.
+    Query Params:
+      - season: '2026', '2025', '2024', 'all' (default: '2026')
+      - window: 'all', '5', '10' (default: 'all')
+    """
+    try:
+        season_param = request.args.get('season', '2026')
+        window_param = request.args.get('window', 'all')
+        
+        data_path = os.path.join(base_dir, 'ml_ready_data.csv')
+        df = pd.read_csv(data_path)
+        df = apply_db_custom_lines(df)
+        
+        if season_param != 'all':
+            try:
+                s_int = int(season_param)
+                df = df[df['Season'] == s_int].copy()
+            except ValueError:
+                pass
+                
+        df = df.sort_values('Date').reset_index(drop=True)
+        
+        home_df = df[['Date', 'HomeTeam', 'HomeScore', 'AwayScore', 'OverUnder']].copy()
+        home_df.columns = ['Date', 'Team', 'PtsFor', 'PtsAgainst', 'OverUnder']
+        
+        away_df = df[['Date', 'AwayTeam', 'AwayScore', 'HomeScore', 'OverUnder']].copy()
+        away_df.columns = ['Date', 'Team', 'PtsFor', 'PtsAgainst', 'OverUnder']
+        
+        team_games = pd.concat([home_df, away_df], ignore_index=True).sort_values('Date').reset_index(drop=True)
+        team_games['CombinedTotal'] = team_games['PtsFor'] + team_games['PtsAgainst']
+        team_games['IsOver'] = team_games['CombinedTotal'] > team_games['OverUnder']
+        
+        results = []
+        for team, group in team_games.groupby('Team'):
+            team_full = REVERSE_TEAM_MAP.get(team, team)
+            sub_group = group.copy()
+            if window_param in ('5', '10'):
+                w_int = int(window_param)
+                sub_group = sub_group.tail(w_int)
+                
+            gp = len(sub_group)
+            if gp == 0:
+                continue
+                
+            pts_for = float(sub_group['PtsFor'].mean())
+            pts_against = float(sub_group['PtsAgainst'].mean())
+            avg_total = float(sub_group['CombinedTotal'].mean())
+            avg_line = float(sub_group['OverUnder'].mean())
+            over_hits = int(sub_group['IsOver'].sum())
+            over_pct = float(round((over_hits / gp) * 100, 1))
+            diff = float(round(avg_total - avg_line, 1))
+            
+            results.append({
+                'team_abbr': team,
+                'team_name': team_full,
+                'gp': gp,
+                'pts_for': round(pts_for, 1),
+                'pts_against': round(pts_against, 1),
+                'avg_total': round(avg_total, 1),
+                'avg_line': round(avg_line, 1),
+                'diff': diff,
+                'over_hits': over_hits,
+                'over_pct': over_pct
+            })
+            
+        results.sort(key=lambda x: x['avg_total'], reverse=True)
+        return jsonify({
+            'season': season_param,
+            'window': window_param,
+            'total_teams': len(results),
+            'teams': results
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/h2h_analytics', methods=['GET'])
+def get_h2h_analytics():
+    """
+    Returns Head-to-Head matchup totals analytics between team_a and team_b.
+    Query Params:
+      - team_a: Full name or abbreviation (e.g. 'Toronto Tempo' or 'TOR')
+      - team_b: Full name or abbreviation (e.g. 'Indiana Fever' or 'IND')
+      - window: 'all', '5', '10' (default: 'all')
+      - season: 'all', '2026', '2025', '2024' (default: 'all')
+    """
+    try:
+        raw_team_a = request.args.get('team_a', 'Toronto Tempo')
+        raw_team_b = request.args.get('team_b', 'Indiana Fever')
+        window_param = request.args.get('window', 'all')
+        season_param = request.args.get('season', 'all')
+        
+        norm_a = normalize_team_name(raw_team_a)
+        norm_b = normalize_team_name(raw_team_b)
+        
+        team_a_full = REVERSE_TEAM_MAP.get(norm_a.upper(), norm_a)
+        team_b_full = REVERSE_TEAM_MAP.get(norm_b.upper(), norm_b)
+        
+        data_path = os.path.join(base_dir, 'ml_ready_data.csv')
+        df = pd.read_csv(data_path)
+        df = apply_db_custom_lines(df)
+        
+        if season_param != 'all':
+            try:
+                s_int = int(season_param)
+                df = df[df['Season'] == s_int].copy()
+            except ValueError:
+                pass
+                
+        df = df.sort_values('Date').reset_index(drop=True)
+        
+        mask_h2h = (
+            ((df['HomeTeam'] == team_a_full) & (df['AwayTeam'] == team_b_full)) |
+            ((df['HomeTeam'] == team_b_full) & (df['AwayTeam'] == team_a_full))
+        )
+        df_h2h = df[mask_h2h].copy().reset_index(drop=True)
+        
+        if window_param in ('5', '10'):
+            w_int = int(window_param)
+            df_h2h = df_h2h.tail(w_int).copy().reset_index(drop=True)
+            
+        matches_list = []
+        team_a_wins = 0
+        team_b_wins = 0
+        over_hits = 0
+        
+        for idx, row in df_h2h.iterrows():
+            h_team = row['HomeTeam']
+            a_team = row['AwayTeam']
+            h_score = int(row['HomeScore'])
+            a_score = int(row['AwayScore'])
+            total_score = h_score + a_score
+            line = float(row['OverUnder'])
+            is_over = total_score > line
+            if is_over:
+                over_hits += 1
+                
+            winner = h_team if h_score > a_score else a_team
+            if winner == team_a_full:
+                team_a_wins += 1
+            else:
+                team_b_wins += 1
+                
+            team_a_pts = h_score if h_team == team_a_full else a_score
+            team_b_pts = a_score if h_team == team_a_full else h_score
+            
+            matches_list.append({
+                'date': str(row['Date']),
+                'season': int(row['Season']),
+                'home_team': h_team,
+                'away_team': a_team,
+                'home_score': h_score,
+                'away_score': a_score,
+                'team_a_score': team_a_pts,
+                'team_b_score': team_b_pts,
+                'total_score': total_score,
+                'over_under': line,
+                'is_over': is_over,
+                'winner': winner
+            })
+            
+        total_games = len(matches_list)
+        if total_games > 0:
+            avg_total_pts = float(round(np.mean([m['total_score'] for m in matches_list]), 1))
+            avg_line = float(round(np.mean([m['over_under'] for m in matches_list]), 1))
+            avg_team_a_pts = float(round(np.mean([m['team_a_score'] for m in matches_list]), 1))
+            avg_team_b_pts = float(round(np.mean([m['team_b_score'] for m in matches_list]), 1))
+            over_pct = float(round((over_hits / total_games) * 100, 1))
+            line_diff = float(round(avg_total_pts - avg_line, 1))
+        else:
+            avg_total_pts = 0.0
+            avg_line = 0.0
+            avg_team_a_pts = 0.0
+            avg_team_b_pts = 0.0
+            over_pct = 0.0
+            line_diff = 0.0
+            
+        return jsonify({
+            'team_a': team_a_full,
+            'team_b': team_b_full,
+            'window': window_param,
+            'season': season_param,
+            'total_games': total_games,
+            'team_a_wins': team_a_wins,
+            'team_b_wins': team_b_wins,
+            'avg_team_a_pts': avg_team_a_pts,
+            'avg_team_b_pts': avg_team_b_pts,
+            'avg_total_pts': avg_total_pts,
+            'avg_line': avg_line,
+            'line_diff': line_diff,
+            'over_hits': over_hits,
+            'over_pct': over_pct,
+            'matches': list(reversed(matches_list))
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/team_game_history', methods=['GET'])
+def get_team_game_history():
+    """
+    Returns game history and Over/Under analytics for a specific team.
+    Query Params:
+      - team: Team full name or abbreviation (e.g. 'Indiana Fever' or 'IND')
+      - season: '2026', '2025', '2024', 'all' (default: '2026')
+      - window: 'all', '5', '10' (default: 'all')
+    """
+    try:
+        raw_team = request.args.get('team', 'Indiana Fever').strip()
+        season_param = request.args.get('season', '2026')
+        window_param = request.args.get('window', 'all')
+        
+        norm_team = normalize_team_name(raw_team)
+        
+        team_full = None
+        norm_upper = norm_team.upper()
+        
+        if norm_upper in REVERSE_TEAM_MAP:
+            team_full = REVERSE_TEAM_MAP[norm_upper]
+        else:
+            for abbr, full in REVERSE_TEAM_MAP.items():
+                if full.upper() == norm_upper:
+                    team_full = full
+                    break
+                    
+        if not team_full:
+            team_full = norm_team
+            
+        team_abbr = get_team_abbr(team_full)
+        
+        data_path = os.path.join(base_dir, 'ml_ready_data.csv')
+        df = pd.read_csv(data_path)
+        df = apply_db_custom_lines(df)
+        
+        mask = (df['HomeTeam'] == team_full) | (df['AwayTeam'] == team_full)
+        df_team = df[mask].copy()
+        
+        if season_param != 'all':
+            try:
+                s_int = int(season_param)
+                df_team = df_team[df_team['Season'] == s_int].copy()
+            except ValueError:
+                pass
+                
+        df_team = df_team.sort_values('Date').reset_index(drop=True)
+        
+        if window_param in ('5', '10'):
+            try:
+                w_int = int(window_param)
+                df_team = df_team.tail(w_int).copy().reset_index(drop=True)
+            except ValueError:
+                pass
+                
+        games_list = []
+        over_hits = 0
+        under_hits = 0
+        push_hits = 0
+        
+        for _, row in df_team.iterrows():
+            h_team = str(row['HomeTeam'])
+            a_team = str(row['AwayTeam'])
+            h_score = int(row['HomeScore'])
+            a_score = int(row['AwayScore'])
+            is_home = bool(h_team == team_full)
+            
+            team_score = h_score if is_home else a_score
+            opp_score = a_score if is_home else h_score
+            opponent = a_team if is_home else h_team
+            
+            total_score = h_score + a_score
+            over_under = float(row['OverUnder'])
+            line_diff = round(float(total_score - over_under), 1)
+            
+            if total_score > over_under:
+                outcome = 'OVER'
+                over_hits += 1
+            elif total_score < over_under:
+                outcome = 'UNDER'
+                under_hits += 1
+            else:
+                outcome = 'PUSH'
+                push_hits += 1
+                
+            games_list.append({
+                'date': str(row['Date']),
+                'season': int(row['Season']),
+                'home_team': h_team,
+                'away_team': a_team,
+                'home_score': h_score,
+                'away_score': a_score,
+                'is_home': is_home,
+                'team_score': team_score,
+                'opp_score': opp_score,
+                'opponent': opponent,
+                'total_score': total_score,
+                'over_under': over_under,
+                'line_diff': line_diff,
+                'outcome': outcome
+            })
+            
+        total_games = len(games_list)
+        if total_games > 0:
+            avg_total_pts = float(round(np.mean([g['total_score'] for g in games_list]), 1))
+            avg_line = float(round(np.mean([g['over_under'] for g in games_list]), 1))
+            over_pct = float(round((over_hits / total_games) * 100, 1))
+            line_diff = float(round(avg_total_pts - avg_line, 1))
+        else:
+            avg_total_pts = 0.0
+            avg_line = 0.0
+            over_pct = 0.0
+            line_diff = 0.0
+            
+        return jsonify({
+            'team_name': team_full,
+            'team_abbr': team_abbr,
+            'season': season_param,
+            'window': window_param,
+            'total_games': total_games,
+            'over_hits': over_hits,
+            'under_hits': under_hits,
+            'push_hits': push_hits,
+            'over_pct': over_pct,
+            'avg_total_pts': avg_total_pts,
+            'avg_line': avg_line,
+            'line_diff': line_diff,
+            'games': list(reversed(games_list))
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
 
 
 # Run startup calculations

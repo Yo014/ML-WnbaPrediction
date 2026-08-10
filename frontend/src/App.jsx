@@ -9,6 +9,7 @@ import ExplainabilityCard from './components/ExplainabilityCard';
 import RosterCard from './components/RosterCard';
 import SimulationBacktester from './components/SimulationBacktester';
 import UpcomingBets from './components/UpcomingBets';
+import TotalsAnalyticsCard from './components/TotalsAnalyticsCard';
 function App() {
   const [activeTab, setActiveTab] = useState('predictor');
   const [teamsList, setTeamsList] = useState([]);
@@ -200,6 +201,12 @@ function App() {
             <h1>WNBA Season Simulator & Backtester <span className="badge">Simulation Mode</span></h1>
           </div>
         </header>
+      ) : activeTab === 'analytics' ? (
+        <header>
+          <div className="brand-container">
+            <h1>WNBA Totals & Head-to-Head Analytics <span className="badge">Analytics Mode</span></h1>
+          </div>
+        </header>
       ) : (
         <header>
           <div className="brand-container">
@@ -219,6 +226,12 @@ function App() {
           onClick={() => setActiveTab('upcoming')}
         >
           Upcoming Bets
+        </button>
+        <button
+          className={`nav-tab ${activeTab === 'analytics' ? 'active' : ''}`}
+          onClick={() => setActiveTab('analytics')}
+        >
+          Totals & H2H Analytics
         </button>
         <button
           className={`nav-tab ${activeTab === 'simulator' ? 'active' : ''}`}
@@ -305,6 +318,10 @@ function App() {
 
       <div style={{ display: activeTab === 'upcoming' ? 'block' : 'none' }}>
         <UpcomingBets />
+      </div>
+
+      <div style={{ display: activeTab === 'analytics' ? 'block' : 'none' }}>
+        <TotalsAnalyticsCard />
       </div>
     </>
   );
