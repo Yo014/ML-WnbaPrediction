@@ -1,8 +1,8 @@
 # WNBA Point Spread, Totals & Betting Simulation Pipeline
 
-An end-to-end Machine Learning pipeline and interactive glassmorphic web application for WNBA **Point Spread prediction**, **Total Points (Over/Under) forecasting**, **Win Probability estimation**, and **Betting Portfolio Simulation**.
+An end-to-end Machine Learning pipeline and interactive glassmorphic web application for WNBA **Point Spread prediction**, **Total Points (Over/Under) forecasting**, **Win Probability estimation**, **Totals & Pace Analytics**, and **Betting Portfolio Backtesting**.
 
-This system ingests multi-year historical match box scores (2018–2026, comprising **1,956 match records**), **1,317 player season performance metrics** across 15 WNBA franchises (including expansion teams Golden State Valkyries, Portland Fire, and Toronto Tempo), referee officiating assignments, schedule fatigue, and game-day squad health (injury impact). It trains walk-forward **Stacked Ensembles** (combining CatBoost, XGBoost, LightGBM, and Ridge/Logistic Regression with Lasso L1 regularization) to forecast game point margins and totals. Predictions are mapped to calibrated win/totals probabilities and backtested using Flat betting and Fractional Kelly Criterion strategies against traditional sportsbook odds (FanDuel, Action Network, OddsShark) and Polymarket prediction market contracts.
+This system ingests multi-year historical match box scores (2018–2026, comprising **1,956 match records**), **1,476 player season performance metrics** across 15 WNBA franchises (including expansion teams Golden State Valkyries, Portland Fire, and Toronto Tempo), referee officiating assignments, schedule fatigue, and game-day squad health (injury impact). It trains walk-forward **Stacked Ensembles** (combining CatBoost, XGBoost, LightGBM, and Ridge/Logistic Regression with Lasso L1 regularization) to forecast game point margins and totals. Predictions are mapped to calibrated win/totals probabilities and backtested using Flat betting and Fractional Kelly Criterion strategies against traditional sportsbook odds (FanDuel, Action Network, OddsShark) and Polymarket prediction market contracts.
 
 ---
 
@@ -14,7 +14,7 @@ flowchart TD
         A["nba_api / WNBA Stats"] -->|"Raw Matches & Player Logs (2018-2026)"| D["SQLite Database: wnba.db"]
         B["scrape_combined.py / Referees & Inactives"] -->|"Officiating Crews & Box Score Inactives"| D
         C["scrape_polymarket.py & fanduel_odds.py"] -->|"Live Odds & Market Contracts"| D
-        P["populate_db.py"] -->|"Master Pipeline Sync & Seed"| D
+        P["populate_db.py"] -->|"Master Pipeline Sync & Seed (--offline flag)"| D
         FB["Local Fallback Seeds: ml_ready_data.csv & wnba.db.bak"] -.->|"Fail-Fast Network/DNS Resilience"| D
     end
 
@@ -29,7 +29,7 @@ flowchart TD
         H --> I["train_model.py / Spread Model"]
         H --> J["train_totals_model.py / Totals Model"]
         
-        I -->|"Walk-Forward Stacking & Residuals (69 Features)"| K["wnba_spread_model.pkl & model_metadata.json"]
+        I -->|"Walk-Forward Stacking & Residuals (66 Features)"| K["wnba_spread_model.pkl & model_metadata.json"]
         J -->|"Decoupled Pace-Efficiency Stacking (80 Features)"| L["wnba_total_model.pkl & total_model_metadata.json"]
         
         K --> M["predict.py / Inference & Calibration"]
@@ -44,22 +44,22 @@ flowchart TD
 
     subgraph Glassmorphic Frontend Dashboard
         N --> Q["React + Vite SPA Client (frontend/src)"]
-        Q --> R["Upcoming Bets / Matchup Predictor / Backtester / Kelly Calculator"]
+        Q --> R["Upcoming Bets / Matchup Predictor / Backtester / Kelly Calculator / Totals Analytics"]
     end
 ```
 
 ---
 
-## 📂 Codebase Structure & Component Reference
+## 🛠️ Codebase Structure & Component Reference
 
-### 🗄️ 1. Database & Data Ingestion
+### 📁 1. Database & Data Ingestion
 - **[db_manager.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/db_manager.py)**: Schema definition and SQLite database manager for `wnba.db`:
   - `raw_matches`: Historic match scores, pace/possessions, actual referee crews (`CrewChief`, `HomeRef`, `AwayRef`), opening/closing sportsbook lines, and FanDuel odds indicators.
   - `player_stats`: Historic WNBA player season metrics (GP, MIN, PTS, AST, TRB, USG%, Net Rating, OFF/DEF Rating, PIE, Win Shares).
   - `injuries`: Current roster injury states, player status, and expected return dates.
   - `polymarket_odds`: Implied YES/NO win probabilities and trading volume data from Polymarket contracts.
   - `confirmed_bets`: Paper trading ledger tracking user-placed wagers, bet stakes, odds, outcomes, and settled P&L.
-- **[populate_db.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/populate_db.py)**: Master database population and end-to-end pipeline synchronization script. Fetches game logs and player stats from `nba_api` across 2018–2026 (**1,956 match records** and **1,317 player stats**), calculates [EloModel](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/populate_db.py#L43-L79) ratings with home field advantage and season mean reversion, seeds `wnba.db`, preserves live FanDuel odds, executes downstream processing ([build_squad_health.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/build_squad_health.py), [data_processing.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/data_processing.py), [feature_engineering.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/feature_engineering.py), [train_model.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/train_model.py), [train_totals_model.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/train_totals_model.py)), and syncs `wnba.db` to `frontend/wnba.db`. Features automatic fail-fast fallback to pre-packaged local seeds (`ml_ready_data.csv` and `wnba.db.bak`) when live API endpoints encounter network or DNS restrictions.
+- **[populate_db.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/populate_db.py)**: Master database population and end-to-end pipeline synchronization script. Fetches game logs and player stats from `nba_api` across 2018–2026 (**1,956 match records** and **1,476 player stats**), calculates [EloModel](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/populate_db.py#L48-L84) ratings with home field advantage and season mean reversion, seeds `wnba.db`, preserves live FanDuel odds, executes downstream processing ([build_squad_health.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/build_squad_health.py), [data_processing.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/data_processing.py), [feature_engineering.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/feature_engineering.py), [train_model.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/train_model.py), [train_totals_model.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/train_totals_model.py)), and copies `wnba.db` to `frontend/wnba.db`. Supports `--offline` / `--local` CLI flags and automatic fail-fast fallback to pre-packaged local seeds (`ml_ready_data.csv` and `wnba.db.bak`) when live API endpoints encounter network restrictions.
 - **[scrape_combined.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/scrape_combined.py)**: High-performance single-pass scraper fetching both referee officiating crews and inactive roster logs directly from WNBA API box scores (`BoxScoreSummaryV3`). Features user-agent rotation and randomized jitter to handle rate limits.
 - **[scrape_inactives.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/scrape_inactives.py)**: Standalone backfill scraper storing game-level inactive player rosters into database tables across historical seasons.
 - **[scrape_referees.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/scrape_referees.py)**: Standalone backfill scraper storing game-level officiating assignments (`CrewChief`, `HomeRef`, `AwayRef`) into `raw_matches`.
@@ -68,8 +68,8 @@ flowchart TD
 - **[fanduel_odds.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/fanduel_odds.py)**: Fetches real-time WNBA spreads, moneylines, and totals feeds from Action Network / FanDuel APIs.
 
 ### 🧪 2. Data Processing & Feature Engineering
-- **[build_squad_health.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/build_squad_health.py)**: Aggregates active team rosters, scrapes live injury reports from ESPN (with automatic fallback to database `injuries` table), calculates missing player impact metrics (lost Usage %, Net Rating, PIE, Minutes %), and exports `current_squad_health.csv` across all 15 franchises.
-- **[data_processing.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/data_processing.py)**: Standardizes franchise name variations across APIs, calculates game-level team possessions and pace, and computes offensive/defensive efficiency ratings per 100 possessions.
+- **[build_squad_health.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/build_squad_health.py)**: Aggregates active team rosters, scrapes live injury reports from ESPN (with automatic fallback to database `injuries` table), calculates missing player impact metrics (lost Usage %, Net Rating, PIE, Minutes %), and exports `current_squad_health.csv` across all 15 franchises (including GSV, PTF, TOT).
+- **[data_processing.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/data_processing.py)**: Standardizes franchise name variations across APIs (`IND`, `CHI`, `LVA`, `NYL`, `SEA`, `MIN`, `PHO`/`PHX`, `DAL`, `ATL`, `CON`, `LAS`, `WAS`, `GSV`/`GS`, `POR`/`PTF`/`PDX`, `TOR`/`TOT`), calculates game-level team possessions and pace, and computes offensive/defensive efficiency ratings per 100 possessions.
 - **[feature_engineering.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/feature_engineering.py)**: Compiles `ml_ready_data.csv` (137 columns across 1,956 matches) with leak-free chronological features:
   - **Start-of-Season Carry-Over Regression**: Regresses early-season EMAs towards previous season final values to prevent small-sample noise:
     $$EMA_{\text{start}} = 0.75 \cdot EMA_{\text{prev\_season\_final}} + 0.25 \cdot \mu_{\text{league\_mean}}$$
@@ -88,11 +88,11 @@ flowchart TD
   - [StackedEnsembleClassifier](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/stacking_models.py#L298-L450): Combines **CatBoost**, **XGBoost**, **LightGBM**, and `StandardScaler` + **LogisticRegression** as base estimators, using L1-penalized **LogisticRegression** as meta-classifier.
   - [FastDistributionRegressor](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/stacking_models.py#L46-L123): Wraps stacked regressors to output full Gaussian predictive distributions ([NormalDistributionPrediction](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/stacking_models.py#L27-L45)) with estimated residual variance.
 - **[train_model.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/train_model.py)**: Streamlined Point Spread model training pipeline:
-  - **Baseline Feature Selection**: Selects 69 top features using consensus feature importance threshold ($\ge 0.001$).
-  - **Dynamic Sample Weight Decay ($\lambda$)**: Optimizes sample decay weighting $\exp(-\lambda \cdot \text{days})$ over walk-forward CV splits (optimal $\lambda = 0.001$, Validation Log Loss: **0.6152**).
-  - **Stage 1 (Baseline Spread Model)**: Fits stacked regressor/classifier on team metrics to predict point spread ($\text{HomeScore} - \text{AwayScore}$), achieving **65.31% win accuracy**, **9.10 MAE**, and **0.6476 Log Loss** on held-out test matches.
-  - **Stage 2 (Residual Model)**: Fits stacked regressor on full feature set (including closing market lines) to predict residual margin relative to `ClosingSpread`, achieving **64.29% win accuracy**, **9.14 MAE**, and **0.6241 Log Loss** vs Market MAE **9.59**, Acc **65.31%**, Log Loss **0.6571**.
-  - **Isotonic Calibration**: Fits out-of-fold calibrators on 50/50 blended Normal CDF and classifier probabilities. Saves `wnba_spread_model.pkl` and `model_metadata.json`. Residuals Standard Deviation ($\sigma_{\text{spread}} = 12.50$).
+  - **Baseline Feature Selection**: Selects 66 top features using consensus feature importance threshold ($\ge 0.001$).
+  - **Dynamic Sample Weight Decay ($\lambda$)**: Optimizes sample decay weighting $\exp(-\lambda \cdot \text{days})$ over walk-forward CV splits (optimal $\lambda = 0.0005$, Validation Log Loss: **0.6096**).
+  - **Stage 1 (Baseline Spread Model)**: Fits stacked regressor/classifier on team metrics to predict point spread ($\text{HomeScore} - \text{AwayScore}$), achieving **66.33% win accuracy**, **8.90 MAE**, and **0.6151 Log Loss** on held-out test matches.
+  - **Stage 2 (Residual Model)**: Fits stacked regressor on full feature set (including closing market lines) to predict residual margin relative to `ClosingSpread`, achieving **66.33% win accuracy**, **8.88 MAE**, and **0.6169 Log Loss** vs Market MAE **9.41**, Acc **63.27%**, Log Loss **0.6303**.
+  - **Isotonic Calibration**: Fits out-of-fold calibrators on 50/50 blended Normal CDF and classifier probabilities. Saves `wnba_spread_model.pkl` and `model_metadata.json`. Residuals Standard Deviation ($\sigma_{\text{spread}} = 12.15$).
 - **[train_totals_model.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/train_totals_model.py)**: Streamlined Total Points (Over/Under) model training pipeline:
   - **Decoupled Pace-Efficiency Decomposition**: Stage 1 models pace and team offensive efficiencies independently via parallel stacked regressors:
     $$\text{Total}_{\text{S1}} = \text{Pace} \times \frac{\text{HomeEff} + \text{AwayEff}}{100}$$
@@ -104,7 +104,7 @@ flowchart TD
 - **[run_and_flush.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/run_and_flush.py)**: Real-time unbuffered log execution wrapper for background model training runs.
 - **[optuna_best_params_spread.json](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/optuna_best_params_spread.json)**: Optimized hyperparameters for spread base models.
 
-### 🎰 4. Betting Simulation & Backtester
+### 🎲 4. Betting Simulation & Backtester
 - **[simulate_season.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/simulate_season.py)**: Out-of-fold historical simulation engine:
   - Evaluates predictive performance via **Accuracy**, **Brier Score**, and **Log Loss** across Model, Sportsbook, and Polymarket probabilities.
   - **Flat Betting**: Wagering a fixed percentage of initial bankroll (e.g., 2%).
@@ -113,10 +113,10 @@ flowchart TD
     Supports Quarter-Kelly (0.25) capped at configurable maximum bankroll limits (e.g., 10%).
   - **Monte Carlo Season Simulation**: 1,000-trial simulation for team standings and equity curve distributions.
 
-### 💻 5. Web Interface & REST API
-- **[app.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/app.py)**: Flask REST API providing endpoints for predictions, simulation, paper trading, and scrapers:
+### 🌐 5. Web Interface & REST API
+- **[app.py](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/app.py)**: Flask REST API providing 18 endpoints for predictions, simulation, paper trading, and scrapers:
   - Serves static compiled React build (`frontend/dist/index.html`).
-  - Implements 15+ REST endpoints for teams, rosters, crew chiefs, upcoming predictions, upcoming bets, custom matchup predictor, backtesting, paper trading, schedule, and live odds scraping.
+  - Implements REST endpoints for teams, rosters, crew chiefs, upcoming predictions, upcoming bets, custom matchup predictor, backtesting, paper trading, totals analytics, H2H analytics, team history, and live odds scraping.
 - **[frontend/](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/frontend)**: Glassmorphic React SPA built with Vite:
   - **[UpcomingBets.jsx](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/frontend/src/components/UpcomingBets.jsx)**: Dynamic betting cards with live FanDuel/Polymarket odds, Kelly recommendations, line value badges, and one-click bet logging modal.
   - **[PredictionHero.jsx](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/frontend/src/components/PredictionHero.jsx)**: Main interactive matchup hero widget featuring animated win probability and spread gauges.
@@ -124,6 +124,7 @@ flowchart TD
   - **[RosterCard.jsx](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/frontend/src/components/RosterCard.jsx)** & **[PlayerCard.jsx](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/frontend/src/components/PlayerCard.jsx)**: Interactive roster manager for toggling player injury/inactive status and inspecting advanced player ratings (Win Shares, PIE, USG%).
   - **[KellyCalculatorCard.jsx](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/frontend/src/components/KellyCalculatorCard.jsx)**: Dynamic bet sizing calculator with customizable bankroll, odds, and Kelly multiplier.
   - **[SimulationBacktester.jsx](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/frontend/src/components/SimulationBacktester.jsx)**: Full backtester dashboard featuring interactive bankroll growth charts, strategy comparisons (Flat vs Kelly), ROI %, max drawdown, Sharpe ratio, and calibration metrics.
+  - **[TotalsAnalyticsCard.jsx](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/frontend/src/components/TotalsAnalyticsCard.jsx)**: Comprehensive Total Points & Pace breakdown component displaying over/under distribution histograms, pace efficiency split metrics, and team-level projected totals.
   - **[ExplainabilityCard.jsx](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/frontend/src/components/ExplainabilityCard.jsx)**: Metric importance breakdown for predictions.
   - **[BettingOddsCard.jsx](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/frontend/src/components/BettingOddsCard.jsx)** & **[PerformanceDetailsCard.jsx](file:///Users/santomukiza/Desktop/Github/ML-WnbaPrediction/frontend/src/components/PerformanceDetailsCard.jsx)**: Detailed market odds breakdown and historical performance tracking.
 
@@ -135,11 +136,11 @@ flowchart TD
 
 | Model / Benchmark | MAE | Win Accuracy (%) | Log Loss |
 | :--- | :---: | :---: | :---: |
-| **Market Baseline (Closing Lines)** | 9.59 | 65.31% | 0.6571 |
-| **Stage 1 Streamlined Spread (Baseline Features)** | **9.10** | **65.31%** | **0.6476** |
-| **Stage 2 Streamlined Spread Residual Engine** | **9.14** | **64.29%** | **0.6241** |
+| **Market Baseline (Closing Lines)** | 9.41 | 63.27% | 0.6303 |
+| **Stage 1 Streamlined Spread (Baseline Features)** | **8.90** | **66.33%** | **0.6151** |
+| **Stage 2 Streamlined Spread Residual Engine** | **8.88** | **66.33%** | **0.6169** |
 
-*Residual Spread Uncertainty ($\sigma_{\text{spread}}$): **12.50***
+*Residual Spread Uncertainty ($\sigma_{\text{spread}}$): **12.15***
 
 ### 🎯 2. Streamlined Total Points (Over/Under) Model Performance
 
@@ -152,11 +153,11 @@ flowchart TD
 
 ---
 
-## ⚡ Execution Guide & Pipeline Setup
+## 🚀 Execution Guide & Pipeline Setup
 
 Follow these steps to initialize the database, populate multi-year historical data, train models, verify parity, and launch the web server.
 
-### 🐍 1. Environment & Backend Setup
+### 💻 1. Environment & Backend Setup
 
 1. **Install Python Dependencies**:
    ```bash
@@ -177,9 +178,13 @@ Follow these steps to initialize the database, populate multi-year historical da
 
 4. **Populate Database & Execute End-to-End Pipeline**:
    ```bash
+   # Standard live fetch mode:
    python3 populate_db.py
+
+   # Or fast offline fallback mode (bypasses network/DNS restrictions):
+   python3 populate_db.py --offline
    ```
-   *Fetches WNBA regular season data (2018–2026, 1,956 matches and 1,317 player stats records), builds Elo ratings, computes squad health, processes efficiencies, engineers features, trains spread and totals models, and syncs `wnba.db` to `frontend/wnba.db`. Automatically uses local seeds (`ml_ready_data.csv` & `wnba.db.bak`) when live API endpoints are unavailable.*
+   *Fetches WNBA regular season data (2018–2026, 1,956 matches and 1,476 player stats records), builds Elo ratings, computes squad health, processes efficiencies, engineers features, trains spread and totals models, and copies `wnba.db` to `frontend/wnba.db`. Automatically uses local seeds (`ml_ready_data.csv` & `wnba.db.bak`) when live API endpoints are unavailable.*
 
 5. **(Optional) Backfill Historical Officiating & Inactive Rosters**:
    ```bash
@@ -212,7 +217,7 @@ Follow these steps to initialize the database, populate multi-year historical da
    ```
    *Launches REST server on `http://localhost:5001`.*
 
-### ⚛️ 2. Frontend Setup (React + Vite)
+### 🎨 2. Frontend Setup (React + Vite)
 
 1. **Install Frontend Dependencies**:
    ```bash
@@ -234,7 +239,7 @@ Follow these steps to initialize the database, populate multi-year historical da
 
 ---
 
-## 🔌 REST API Endpoint Reference
+## 📡 REST API Endpoint Reference
 
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
@@ -252,11 +257,14 @@ Follow these steps to initialize the database, populate multi-year historical da
 | `POST /api/edit_bet` | POST | Edits details or stake of an existing confirmed bet. |
 | `POST /api/delete_bet` | POST | Deletes a confirmed bet record. |
 | `GET /api/confirmed_bets` | GET | Fetches full ledger of active and settled paper trading bets with calculated P&L. |
+| `GET /api/team_totals` | GET | Returns historical team pace, offensive efficiency, defensive efficiency, and totals distribution metrics. |
+| `GET /api/h2h_analytics` | GET | Returns Head-to-Head historic match statistics and win rates for team pairs. |
+| `GET /api/team_game_history` | GET | Returns game-by-game performance log for specified team. |
 | `GET /api/schedule` | GET | Returns season calendar schedule for WNBA fixtures. |
 
 ---
 
-## 📐 Key Mathematical Formulations
+## 🧮 Key Mathematical Formulations
 
 ### 1. Elo Rating with Home Field Advantage & Mean Reversion
 $$\text{Expected}_{\text{Home}} = \frac{1}{1 + 10^{\frac{R_{\text{Away}} - R_{\text{Home}} - \text{HFA}}{400}}}$$

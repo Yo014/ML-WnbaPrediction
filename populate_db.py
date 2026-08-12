@@ -1,12 +1,18 @@
 import time
+import sys
+import os
+import shutil
 import random
 import hashlib
 import sqlite3
+import socket
 import pandas as pd
 from nba_api.stats.endpoints import leaguegamelog, leaguedashplayerstats
 import nba_api.stats.library.http
 from db_manager import initialize_db, get_connection, DB_NAME
 from fanduel_odds import fetch_fanduel_odds
+
+socket.setdefaulttimeout(2.0)
 
 # Override global headers for nba_api requests to bypass rate-limiting blocks
 nba_api.stats.library.http.STATS_HEADERS.update({
@@ -173,6 +179,9 @@ def fetch_games(seasons):
         if df is not None and not df.empty:
             print(f"  Successfully fetched {len(df)} rows for season {season}")
             all_game_rows.append(df)
+        else:
+            print(f"  Network fetch failed for season {season}. Aborting remote fetch loop to use local dataset fallback.")
+            break
             
     if not all_game_rows:
         return pd.DataFrame()
@@ -300,7 +309,9 @@ def fetch_player_stats(seasons):
             merged['Season'] = int(season)
             all_player_stats.append(merged)
         else:
-            print(f"  Warning: Skipping player stats for season {season} due to fetch errors.")
+            print(f"  Network fetch failed for season {season}. Aborting remote fetch loop to use local dataset fallback.")
+            break
+
             
     if not all_player_stats:
         return pd.DataFrame()
@@ -428,15 +439,19 @@ def main():
     initialize_db()
     
     seasons = [str(year) for year in range(2018, 2027)]
+    offline_mode = ('--offline' in sys.argv or '--local' in sys.argv or os.environ.get('OFFLINE') == '1')
     
     # 3. Fetch and parse matches (with seamless fallback)
-    games_df = fetch_games(seasons)
+    if offline_mode:
+        print("Offline mode requested via CLI flag/environment. Skipping live API fetch...")
+        games_df = pd.DataFrame()
+    else:
+        games_df = fetch_games(seasons)
     if not games_df.empty:
         matches = parse_games_into_matches(games_df)
         print(f"Parsed {len(matches)} total match records from NBA API.")
     else:
         print("Using local match dataset (ml_ready_data.csv / wnba.db.bak)...")
-        import os
         base_dir = os.path.dirname(os.path.abspath(__file__))
         data_csv = os.path.join(base_dir, 'ml_ready_data.csv')
         bak_db = os.path.join(base_dir, 'wnba.db.bak')
@@ -473,12 +488,15 @@ def main():
     current_season = None
     
     # Fetch live FanDuel odds
-    try:
-        fd_odds_list = fetch_fanduel_odds()
-        print(f"Fetched {len(fd_odds_list)} live FanDuel odds.")
-    except Exception as e:
-        print("Failed to fetch live FanDuel odds in populate_db.py:", e)
+    if offline_mode:
         fd_odds_list = []
+    else:
+        try:
+            fd_odds_list = fetch_fanduel_odds()
+            print(f"Fetched {len(fd_odds_list)} live FanDuel odds.")
+        except Exception as e:
+            print("Failed to fetch live FanDuel odds in populate_db.py:", e)
+            fd_odds_list = []
         
     for match in matches:
         date = match['Date']
@@ -559,13 +577,15 @@ def main():
         elo.update_ratings(home_team, away_team, home_score, away_score)
         
     # 4. Fetch and process player statistics (with seamless fallback)
-    player_df = fetch_player_stats(seasons)
+    if offline_mode:
+        player_df = pd.DataFrame()
+    else:
+        player_df = fetch_player_stats(seasons)
     if not player_df.empty:
         processed_players = process_player_stats(player_df)
         print(f"Processed {len(processed_players)} player stats records from NBA API.")
     else:
         print("Using local player stats backup dataset (wnba.db.bak)...")
-        import os
         base_dir = os.path.dirname(os.path.abspath(__file__))
         bak_db = os.path.join(base_dir, 'wnba.db.bak')
         processed_players = []
@@ -675,8 +695,6 @@ def main():
         print(f"Warning: Failed to run pipeline sync: {e}")
         
     # Also populate frontend/wnba.db
-    import shutil
-    import os
     base_dir = os.path.dirname(os.path.abspath(__file__))
     frontend_db_path = os.path.join(base_dir, 'frontend', 'wnba.db')
     try:

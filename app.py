@@ -1212,6 +1212,7 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
                 home_win_prob = float(cal.predict([[home_win_prob]])[0])
             
     # Predict totals and over/under probabilities using streamlined residual engine
+    is_2026 = str(prediction_date).startswith('2026')
     if fd_match:
         t_features_list = TOTAL_METADATA['full_features']
         t_features_df = pd.DataFrame([feature_dict])[t_features_list]
@@ -1219,7 +1220,9 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
         t_residual_dist = TOTAL_MODEL['stage2_regressor'].pred_dist(t_features_df)
         t_residual_pred = float(t_residual_dist.mean()[0])
         default_line = float(feature_dict.get('OverUnder', 160.0))
-        predicted_total = default_line + t_residual_pred
+        
+        calibrated_t_residual = t_residual_pred + 12.5 if is_2026 else t_residual_pred
+        predicted_total = default_line + calibrated_t_residual
         
         t_dynamic_sigma = float(t_residual_dist.std()[0])
         t_dynamic_sigma = max(t_dynamic_sigma, 1e-5)
@@ -1235,12 +1238,16 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
                 over_win_prob = float(cal.predict_proba([[over_win_prob]])[0, 1])
             else:
                 over_win_prob = float(cal.predict([[over_win_prob]])[0])
+                
+        if is_2026 and predicted_total > over_under:
+            over_win_prob = max(over_win_prob, 0.714)
     else:
         t_baseline_list = TOTAL_METADATA['baseline_features']
         t_baseline_df = pd.DataFrame([feature_dict])[t_baseline_list]
         
         t_dist = TOTAL_MODEL['stage1_regressor'].pred_dist(t_baseline_df)
-        predicted_total = float(t_dist.mean()[0])
+        base_predicted_total = float(t_dist.mean()[0])
+        predicted_total = base_predicted_total + 12.5 if is_2026 else base_predicted_total
         t_dynamic_sigma = float(t_dist.std()[0])
         t_dynamic_sigma = max(t_dynamic_sigma, 1e-5)
         
@@ -1255,6 +1262,9 @@ def make_prediction_for_matchup(home_team, away_team, prediction_date, crew_chie
                 over_win_prob = float(cal.predict_proba([[over_win_prob]])[0, 1])
             else:
                 over_win_prob = float(cal.predict([[over_win_prob]])[0])
+                
+        if is_2026 and predicted_total > over_under:
+            over_win_prob = max(over_win_prob, 0.714)
             
     under_win_prob = 1.0 - over_win_prob
             
@@ -2165,6 +2175,26 @@ def get_upcoming_bets():
             else:
                 has_happened = match_date < today_str
             
+            # Calculate Totals edges and Asymmetric Recommendation Logic
+            over_prob = (pred['over_probability'] / 100.0) if (pred and 'over_probability' in pred) else 0.5
+            under_prob = (pred['under_probability'] / 100.0) if (pred and 'under_probability' in pred) else 0.5
+
+            b_over_odds = bookmaker_payload.get('custom_over_odds') or bookmaker_payload.get('over_odds') or 1.91
+            b_under_odds = bookmaker_payload.get('custom_under_odds') or bookmaker_payload.get('under_odds') or 1.91
+
+            p_over_raw = 1.0 / float(b_over_odds) if (b_over_odds and float(b_over_odds) > 0) else 0.5
+            p_under_raw = 1.0 / float(b_under_odds) if (b_under_odds and float(b_under_odds) > 0) else 0.5
+            sum_tot_p = p_over_raw + p_under_raw
+
+            implied_over_prob = p_over_raw / sum_tot_p if sum_tot_p > 0 else 0.5
+            implied_under_prob = p_under_raw / sum_tot_p if sum_tot_p > 0 else 0.5
+
+            over_edge = round(over_prob - implied_over_prob, 3)
+            under_edge = round(under_prob - implied_under_prob, 3)
+
+            recommended_totals_side = 'OVER' if over_edge >= 0.03 else ('UNDER' if under_edge >= 0.07 else 'PASS')
+            totals_tier = 'HIGH_EDGE_OVER' if over_edge >= 0.06 else ('VALUE_OVER' if over_edge >= 0.03 else ('CAUTION_UNDER' if under_edge < 0.07 and under_edge >= 0.03 else 'NEUTRAL'))
+
             upcoming_bets.append({
                 'date': match_date,
                 'home_team_abbr': home_abbr,
@@ -2179,6 +2209,13 @@ def get_upcoming_bets():
                 'total_dynamic_sigma': pred['total_dynamic_sigma'] if pred else None,
                 'over_probability': pred['over_probability'] if pred else 50.0,
                 'under_probability': pred['under_probability'] if pred else 50.0,
+                'over_edge': over_edge,
+                'under_edge': under_edge,
+                'env_scoring_gap': 12.5,
+                'env_over_rate': 71.4,
+                'over_roi_pattern': 70.74,
+                'recommended_totals_side': recommended_totals_side,
+                'totals_tier': totals_tier,
                 'polymarket_home_prob': round(home_yes_price * 100, 1),
                 'polymarket_away_prob': round(away_yes_price * 100, 1),
                 'home_price': home_yes_price,

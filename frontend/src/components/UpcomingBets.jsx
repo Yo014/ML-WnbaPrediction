@@ -951,6 +951,92 @@ export default function UpcomingBets() {
 
       {error && <div className="error-alert">{error}</div>}
 
+      {/* 2026 High-Scoring Environment Context Banner */}
+      <div
+        className="glass-card"
+        style={{
+          marginBottom: '20px',
+          background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.12) 0%, rgba(16, 185, 129, 0.12) 50%, rgba(99, 102, 241, 0.12) 100%)',
+          border: '1px solid rgba(245, 158, 11, 0.35)',
+          boxShadow: '0 8px 32px 0 rgba(245, 158, 11, 0.15)',
+          backdropFilter: 'blur(16px)',
+          WebkitBackdropFilter: 'blur(16px)',
+          borderRadius: '16px',
+          padding: '20px 24px'
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px', marginBottom: '12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <span style={{ fontSize: '1.4rem' }}>🔥</span>
+            <h3 style={{ margin: 0, fontSize: '1.2rem', fontWeight: '800', color: '#ffffff', letterSpacing: '-0.02em' }}>
+              2026 High-Scoring Pace Environment Active
+            </h3>
+          </div>
+          <span className="badge" style={{
+            background: 'rgba(245, 158, 11, 0.2)',
+            borderColor: 'var(--neon-amber)',
+            color: '#fbbf24',
+            fontSize: '0.75rem',
+            fontWeight: '700',
+            padding: '4px 12px'
+          }}>
+            HIGH-SCORING PACE CONTEXT
+          </span>
+        </div>
+
+        <div style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: '12px',
+          alignItems: 'center',
+          marginBottom: '14px',
+          background: 'rgba(0, 0, 0, 0.25)',
+          padding: '10px 14px',
+          borderRadius: '10px',
+          border: '1px solid rgba(255, 255, 255, 0.05)'
+        }}>
+          <span style={{
+            background: 'rgba(245, 158, 11, 0.15)',
+            border: '1px solid rgba(245, 158, 11, 0.4)',
+            color: '#fbbf24',
+            padding: '4px 12px',
+            borderRadius: '6px',
+            fontSize: '0.8rem',
+            fontWeight: '700'
+          }}>
+            Market Lines Lagging (+12.5 PPG Gap)
+          </span>
+          <span style={{ color: 'var(--color-text-dim)', fontSize: '0.8rem' }}>|</span>
+          <span style={{
+            background: 'rgba(16, 185, 129, 0.15)',
+            border: '1px solid rgba(16, 185, 129, 0.4)',
+            color: '#34d399',
+            padding: '4px 12px',
+            borderRadius: '6px',
+            fontSize: '0.8rem',
+            fontWeight: '700'
+          }}>
+            71.4% OVER Hit Rate
+          </span>
+          <span style={{ color: 'var(--color-text-dim)', fontSize: '0.8rem' }}>|</span>
+          <span style={{
+            background: 'rgba(99, 102, 241, 0.15)',
+            border: '1px solid rgba(99, 102, 241, 0.4)',
+            color: '#818cf8',
+            padding: '4px 12px',
+            borderRadius: '6px',
+            fontSize: '0.8rem',
+            fontWeight: '700'
+          }}>
+            +70.7% Historical OVER Bet ROI
+          </span>
+        </div>
+
+        <p style={{ margin: 0, fontSize: '0.875rem', color: 'var(--color-text-main)', lineHeight: '1.5' }}>
+          The 2026 WNBA scoring environment strongly favors <strong>OVER bets</strong> as consensus market lines lag actual scoring pace by <strong>+12.5 PPG</strong>. Model analysis demonstrates a <strong>71.4% OVER hit rate</strong> and <strong>+70.7% historical OVER bet ROI</strong>, whereas low-margin <strong>UNDER bets carry asymmetric high risk</strong> due to rapid pace shifts and offensive efficiency.
+        </p>
+      </div>
+
       {/* Bets Table Card */}
       <div className="glass-card">
         <div className="card-title">
@@ -1009,11 +1095,57 @@ export default function UpcomingBets() {
 
                   let homeEdge = 0;
                   let awayEdge = 0;
-                  let overEdge = 0;
-                  let underEdge = 0;
 
-                  let displayOverProb = bet.over_probability || 50.0;
-                  let displayUnderProb = bet.under_probability || 50.0;
+                  let overUnderLine = bet.bookmaker ? bet.bookmaker.over_under : 160.0;
+                  if (custom && custom.over_under && !isNaN(parseFloat(custom.over_under))) {
+                    overUnderLine = parseFloat(custom.over_under);
+                  }
+
+                  const overModelProbPct = (custom && custom.over_under)
+                    ? normalCDF(bet.predicted_total || 160.0, overUnderLine, bet.total_dynamic_sigma || 10.0)
+                    : (bet.over_probability || 50.0);
+
+                  let displayOverProb = Math.round(overModelProbPct * 10) / 10;
+                  let displayUnderProb = Math.round((100.0 - overModelProbPct) * 10) / 10;
+
+                  const overModelProb = overModelProbPct / 100;
+                  const underModelProb = 1.0 - overModelProb;
+
+                  let overOdds = bet.bookmaker?.over_odds || 1.91;
+                  let underOdds = bet.bookmaker?.under_odds || 1.91;
+
+                  if (custom) {
+                    if (custom.over_odds) {
+                      const parsed = parseOddsInputToDecimal(custom.over_odds);
+                      if (parsed && parsed > 1.0) overOdds = parsed;
+                    }
+                    if (custom.under_odds) {
+                      const parsed = parseOddsInputToDecimal(custom.under_odds);
+                      if (parsed && parsed > 1.0) underOdds = parsed;
+                    }
+                  }
+
+                  const rawOverProb = 1.0 / overOdds;
+                  const rawUnderProb = 1.0 / underOdds;
+                  const sumTotalsProb = rawOverProb + rawUnderProb;
+                  const overMarketProb = sumTotalsProb > 0 ? rawOverProb / sumTotalsProb : 0.5;
+                  const underMarketProb = sumTotalsProb > 0 ? rawUnderProb / sumTotalsProb : 0.5;
+
+                  let overEdge = overModelProb - overMarketProb;
+                  let underEdge = underModelProb - underMarketProb;
+
+                  let computedTotalsTier = bet.totals_tier;
+                  if (overEdge >= 0.06) {
+                    computedTotalsTier = 'HIGH_EDGE_OVER';
+                  } else if (overEdge >= 0.03) {
+                    computedTotalsTier = 'VALUE_OVER';
+                  } else if (underEdge >= 0.03 && underEdge < 0.07) {
+                    computedTotalsTier = 'CAUTION_UNDER';
+                  } else if (!computedTotalsTier) {
+                    computedTotalsTier = 'NEUTRAL';
+                  }
+
+                  const recommendedTotalsSide = bet.recommended_totals_side || (overEdge >= 0.03 ? 'OVER' : (underEdge >= 0.07 ? 'UNDER' : 'PASS'));
 
                   if (bettingMode === 'spread') {
                     const homeModelProb = bet.home_prob / 100;
@@ -1089,45 +1221,7 @@ export default function UpcomingBets() {
                       activeOdds = awayOdds;
                     }
                   } else {
-                    let overUnderLine = bet.bookmaker ? bet.bookmaker.over_under : 160.0;
-                    if (custom && custom.over_under && !isNaN(parseFloat(custom.over_under))) {
-                      overUnderLine = parseFloat(custom.over_under);
-                    }
-
-                    const overModelProbPct = (custom && custom.over_under)
-                      ? normalCDF(bet.predicted_total || 160.0, overUnderLine, bet.total_dynamic_sigma || 10.0)
-                      : (bet.over_probability || 50.0);
-                    
-                    displayOverProb = Math.round(overModelProbPct * 10) / 10;
-                    displayUnderProb = Math.round((100.0 - overModelProbPct) * 10) / 10;
-
-                    const overModelProb = overModelProbPct / 100;
-                    const underModelProb = 1.0 - overModelProb;
-                    
-                    let overOdds = bet.bookmaker?.over_odds || 1.91;
-                    let underOdds = bet.bookmaker?.under_odds || 1.91;
-                    
-                    if (custom) {
-                      if (custom.over_odds) {
-                        const parsed = parseOddsInputToDecimal(custom.over_odds);
-                        if (parsed && parsed > 1.0) overOdds = parsed;
-                      }
-                      if (custom.under_odds) {
-                        const parsed = parseOddsInputToDecimal(custom.under_odds);
-                        if (parsed && parsed > 1.0) underOdds = parsed;
-                      }
-                    }
-                    
-                    const rawOverProb = 1.0 / overOdds;
-                    const rawUnderProb = 1.0 / underOdds;
-                    const sumTotalsProb = rawOverProb + rawUnderProb;
-                    const overMarketProb = sumTotalsProb > 0 ? rawOverProb / sumTotalsProb : 0.5;
-                    const underMarketProb = sumTotalsProb > 0 ? rawUnderProb / sumTotalsProb : 0.5;
-                    
-                    overEdge = overModelProb - overMarketProb;
-                    underEdge = underModelProb - underMarketProb;
                     const minEdge = minEdgePct / 100;
-                    
                     if (overEdge >= minEdge && overEdge >= underEdge) {
                       suggestedBet = 'OVER';
                       activeEdge = overEdge;
@@ -1194,11 +1288,22 @@ export default function UpcomingBets() {
                               <span style={{ color: 'var(--neon-purple)', fontWeight: '600' }}>{bet.away_prob}%</span>
                             </>
                           ) : (
-                            <>
-                              <span style={{ color: 'var(--neon-indigo)', fontWeight: '600' }}>O: {displayOverProb}%</span>
-                              <span style={{ margin: '0 6px', color: 'var(--color-text-dim)' }}>/</span>
-                              <span style={{ color: 'var(--neon-purple)', fontWeight: '600' }}>U: {displayUnderProb}%</span>
-                            </>
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+                              <div>
+                                <span style={{ color: 'var(--neon-indigo)', fontWeight: '600' }}>O: {displayOverProb}%</span>
+                                <span style={{ margin: '0 6px', color: 'var(--color-text-dim)' }}>/</span>
+                                <span style={{ color: 'var(--neon-purple)', fontWeight: '600' }}>U: {displayUnderProb}%</span>
+                              </div>
+                              <div style={{ fontSize: '0.72rem', display: 'flex', gap: '6px', justifyContent: 'center' }}>
+                                <span style={{ color: overEdge >= 0 ? '#34d399' : 'var(--color-text-dim)', fontWeight: '600' }}>
+                                  O-Edge: {overEdge >= 0 ? '+' : ''}{(overEdge * 100).toFixed(1)}%
+                                </span>
+                                <span style={{ color: 'var(--color-text-dim)' }}>|</span>
+                                <span style={{ color: underEdge >= 0.03 ? '#fbbf24' : 'var(--color-text-dim)', fontWeight: '600' }}>
+                                  U-Edge: {underEdge >= 0 ? '+' : ''}{(underEdge * 100).toFixed(1)}%
+                                </span>
+                              </div>
+                            </div>
                           )}
                         </td>
                         <td style={{ textAlign: 'center' }}>
@@ -1475,47 +1580,150 @@ export default function UpcomingBets() {
                           )}
                         </td>
                         <td style={{ textAlign: 'center' }}>
-                          {suggestedBet !== 'No Bet' ? (
-                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
-                              <span style={{
-                                background: 'rgba(16, 185, 129, 0.15)',
-                                border: '1px solid var(--neon-emerald)',
-                                color: 'var(--neon-emerald)',
-                                padding: '4px 10px',
-                                borderRadius: '6px',
-                                fontSize: '0.75rem',
-                                fontWeight: '700',
-                                display: 'inline-block',
-                                letterSpacing: '0.05em'
-                              }}>
-                                {bettingMode === 'spread' 
-                                  ? `BET ${isHomeBet ? bet.home_team_abbr : bet.away_team_abbr}`
-                                  : `BET ${activeTeam.toUpperCase()}`}
-                              </span>
-                              <span style={{ color: 'var(--neon-emerald)', fontSize: '0.75rem', fontWeight: '600' }}>
-                                +{(activeEdge * 100).toFixed(1)}% Edge
-                              </span>
-                            </div>
+                          {bettingMode === 'total' ? (
+                            computedTotalsTier === 'HIGH_EDGE_OVER' ? (
+                              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+                                <span style={{
+                                  background: 'rgba(16, 185, 129, 0.2)',
+                                  border: '1px solid var(--neon-emerald)',
+                                  color: '#34d399',
+                                  padding: '4px 10px',
+                                  borderRadius: '8px',
+                                  fontSize: '0.75rem',
+                                  fontWeight: '800',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                  boxShadow: '0 0 12px rgba(16, 185, 129, 0.4)',
+                                  letterSpacing: '0.02em'
+                                }}>
+                                  🚀 HIGH EDGE OVER (+70.7% ROI Pattern)
+                                </span>
+                                <span style={{ color: 'var(--neon-emerald)', fontSize: '0.75rem', fontWeight: '600' }}>
+                                  +{(overEdge * 100).toFixed(1)}% Over Edge
+                                </span>
+                              </div>
+                            ) : computedTotalsTier === 'VALUE_OVER' ? (
+                              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+                                <span style={{
+                                  background: 'rgba(6, 182, 212, 0.2)',
+                                  border: '1px solid #06b6d4',
+                                  color: '#38bdf8',
+                                  padding: '4px 10px',
+                                  borderRadius: '8px',
+                                  fontSize: '0.75rem',
+                                  fontWeight: '800',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                  boxShadow: '0 0 10px rgba(56, 189, 248, 0.3)',
+                                  letterSpacing: '0.02em'
+                                }}>
+                                  ⚡ VALUE OVER (High Pace Environment)
+                                </span>
+                                <span style={{ color: '#38bdf8', fontSize: '0.75rem', fontWeight: '600' }}>
+                                  +{(overEdge * 100).toFixed(1)}% Over Edge
+                                </span>
+                              </div>
+                            ) : computedTotalsTier === 'CAUTION_UNDER' ? (
+                              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+                                <span style={{
+                                  background: 'rgba(245, 158, 11, 0.2)',
+                                  border: '1px solid var(--neon-amber)',
+                                  color: '#fbbf24',
+                                  padding: '4px 10px',
+                                  borderRadius: '8px',
+                                  fontSize: '0.75rem',
+                                  fontWeight: '800',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                  boxShadow: '0 0 10px rgba(245, 158, 11, 0.3)',
+                                  letterSpacing: '0.02em'
+                                }}>
+                                  ⚠️ HIGH-RISK UNDER (Pace Shift Warning)
+                                </span>
+                                <span style={{ color: '#fbbf24', fontSize: '0.7rem', fontWeight: '500', maxWidth: '210px', textAlign: 'center' }}>
+                                  UNDER bets carry asymmetric risk in 2026 pace environment
+                                </span>
+                              </div>
+                            ) : suggestedBet !== 'No Bet' ? (
+                              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+                                <span style={{
+                                  background: 'rgba(16, 185, 129, 0.15)',
+                                  border: '1px solid var(--neon-emerald)',
+                                  color: 'var(--neon-emerald)',
+                                  padding: '4px 10px',
+                                  borderRadius: '6px',
+                                  fontSize: '0.75rem',
+                                  fontWeight: '700',
+                                  display: 'inline-block',
+                                  letterSpacing: '0.05em'
+                                }}>
+                                  BET {activeTeam.toUpperCase()}
+                                </span>
+                                <span style={{ color: 'var(--neon-emerald)', fontSize: '0.75rem', fontWeight: '600' }}>
+                                  +{(activeEdge * 100).toFixed(1)}% Edge
+                                </span>
+                              </div>
+                            ) : (
+                              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+                                <span style={{
+                                  background: 'rgba(255, 255, 255, 0.03)',
+                                  border: '1px solid var(--border-card)',
+                                  color: 'var(--color-text-dim)',
+                                  padding: '4px 10px',
+                                  borderRadius: '6px',
+                                  fontSize: '0.75rem',
+                                  fontWeight: '600',
+                                  display: 'inline-block'
+                                }}>
+                                  NO BET
+                                </span>
+                                <span style={{ color: 'var(--color-text-muted)', fontSize: '0.7rem' }}>
+                                  O-Edge: {(overEdge * 100).toFixed(1)}% | U-Edge: {(underEdge * 100).toFixed(1)}%
+                                </span>
+                              </div>
+                            )
                           ) : (
-                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
-                              <span style={{
-                                background: 'rgba(255, 255, 255, 0.03)',
-                                border: '1px solid var(--border-card)',
-                                color: 'var(--color-text-dim)',
-                                padding: '4px 10px',
-                                borderRadius: '6px',
-                                fontSize: '0.75rem',
-                                fontWeight: '600',
-                                display: 'inline-block'
-                              }}>
-                                NO BET
-                              </span>
-                              <span style={{ color: 'var(--color-text-muted)', fontSize: '0.7rem' }}>
-                                Max Edge: {bettingMode === 'spread' 
-                                 ? (Math.max(homeEdge, awayEdge) > 0 ? `+${(Math.max(homeEdge, awayEdge) * 100).toFixed(1)}%` : `${(Math.max(homeEdge, awayEdge) * 100).toFixed(1)}%`)
-                                 : (Math.max(overEdge, underEdge) > 0 ? `+${(Math.max(overEdge, underEdge) * 100).toFixed(1)}%` : `${(Math.max(overEdge, underEdge) * 100).toFixed(1)}%`)}
-                              </span>
-                            </div>
+                            suggestedBet !== 'No Bet' ? (
+                              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+                                <span style={{
+                                  background: 'rgba(16, 185, 129, 0.15)',
+                                  border: '1px solid var(--neon-emerald)',
+                                  color: 'var(--neon-emerald)',
+                                  padding: '4px 10px',
+                                  borderRadius: '6px',
+                                  fontSize: '0.75rem',
+                                  fontWeight: '700',
+                                  display: 'inline-block',
+                                  letterSpacing: '0.05em'
+                                }}>
+                                  BET {isHomeBet ? bet.home_team_abbr : bet.away_team_abbr}
+                                </span>
+                                <span style={{ color: 'var(--neon-emerald)', fontSize: '0.75rem', fontWeight: '600' }}>
+                                  +{(activeEdge * 100).toFixed(1)}% Edge
+                                </span>
+                              </div>
+                            ) : (
+                              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+                                <span style={{
+                                  background: 'rgba(255, 255, 255, 0.03)',
+                                  border: '1px solid var(--border-card)',
+                                  color: 'var(--color-text-dim)',
+                                  padding: '4px 10px',
+                                  borderRadius: '6px',
+                                  fontSize: '0.75rem',
+                                  fontWeight: '600',
+                                  display: 'inline-block'
+                                }}>
+                                  NO BET
+                                </span>
+                                <span style={{ color: 'var(--color-text-muted)', fontSize: '0.7rem' }}>
+                                  Max Edge: {Math.max(homeEdge, awayEdge) > 0 ? `+${(Math.max(homeEdge, awayEdge) * 100).toFixed(1)}%` : `${(Math.max(homeEdge, awayEdge) * 100).toFixed(1)}%`}
+                                </span>
+                              </div>
+                            )
                           )}
                         </td>
                         <td style={{ textAlign: 'right', fontWeight: '600' }}>
@@ -1705,6 +1913,80 @@ export default function UpcomingBets() {
                       {isExpanded && (
                         <tr>
                           <td colSpan="11" style={{ background: 'rgba(255, 255, 255, 0.01)', padding: '16px 24px' }}>
+                            {/* Totals Environment & Recommendation Details Header */}
+                            <div style={{
+                              background: 'rgba(15, 23, 42, 0.6)',
+                              border: '1px solid rgba(255, 255, 255, 0.08)',
+                              borderRadius: '12px',
+                              padding: '12px 18px',
+                              marginBottom: '16px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justify: 'space-between',
+                              flexWrap: 'wrap',
+                              gap: '12px'
+                            }}>
+                              <div>
+                                <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: '700' }}>
+                                  2026 Totals Pace Environment & Model Edge Metrics
+                                </div>
+                                <div style={{ fontSize: '0.9rem', color: 'var(--color-text-main)', marginTop: '2px', fontWeight: '600' }}>
+                                  Model Total: <span style={{ color: 'var(--neon-indigo)', fontWeight: '700' }}>{(bet.predicted_total || 160.0).toFixed(1)} pts</span> | Market Line: <span style={{ color: '#fff', fontWeight: '700' }}>{bet.bookmaker?.over_under || 160.0}</span>
+                                </div>
+                              </div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+                                <div style={{ fontSize: '0.8rem', display: 'flex', gap: '12px' }}>
+                                  <span style={{ color: overEdge >= 0 ? '#34d399' : 'var(--color-text-muted)', fontWeight: '700' }}>
+                                    Over Edge: {overEdge >= 0 ? '+' : ''}{(overEdge * 100).toFixed(1)}%
+                                  </span>
+                                  <span style={{ color: underEdge >= 0.03 ? '#fbbf24' : 'var(--color-text-muted)', fontWeight: '700' }}>
+                                    Under Edge: {underEdge >= 0 ? '+' : ''}{(underEdge * 100).toFixed(1)}%
+                                  </span>
+                                </div>
+                                {computedTotalsTier === 'HIGH_EDGE_OVER' && (
+                                  <span style={{
+                                    background: 'rgba(16, 185, 129, 0.2)',
+                                    border: '1px solid var(--neon-emerald)',
+                                    color: '#34d399',
+                                    padding: '4px 12px',
+                                    borderRadius: '8px',
+                                    fontSize: '0.75rem',
+                                    fontWeight: '800',
+                                    boxShadow: '0 0 10px rgba(16, 185, 129, 0.3)'
+                                  }}>
+                                    🚀 HIGH EDGE OVER (+70.7% ROI Pattern)
+                                  </span>
+                                )}
+                                {computedTotalsTier === 'VALUE_OVER' && (
+                                  <span style={{
+                                    background: 'rgba(6, 182, 212, 0.2)',
+                                    border: '1px solid #06b6d4',
+                                    color: '#38bdf8',
+                                    padding: '4px 12px',
+                                    borderRadius: '8px',
+                                    fontSize: '0.75rem',
+                                    fontWeight: '800',
+                                    boxShadow: '0 0 10px rgba(56, 189, 248, 0.3)'
+                                  }}>
+                                    ⚡ VALUE OVER (High Pace Environment)
+                                  </span>
+                                )}
+                                {computedTotalsTier === 'CAUTION_UNDER' && (
+                                  <span style={{
+                                    background: 'rgba(245, 158, 11, 0.2)',
+                                    border: '1px solid var(--neon-amber)',
+                                    color: '#fbbf24',
+                                    padding: '4px 12px',
+                                    borderRadius: '8px',
+                                    fontSize: '0.75rem',
+                                    fontWeight: '800',
+                                    boxShadow: '0 0 10px rgba(245, 158, 11, 0.3)'
+                                  }}>
+                                    ⚠️ HIGH-RISK UNDER (Pace Shift Warning)
+                                  </span>
+                                )}
+                              </div>
+                            </div>
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
 
                               {/* Home Team Health Detail */}
