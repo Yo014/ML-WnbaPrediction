@@ -1,23 +1,37 @@
 import requests
 import hashlib
 import random
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 AN_TO_CANONICAL_ABBR = {
     'GS': 'GSV',
+    'GSV': 'GSV',
+    'GSW': 'GSV',
     'LVA': 'LVA',
+    'LV': 'LVA',
     'WSH': 'WAS',
+    'WAS': 'WAS',
     'MIN': 'MIN',
     'NY': 'NYL',
+    'NYL': 'NYL',
     'LA': 'LAS',
+    'LAS': 'LAS',
     'IND': 'IND',
     'CHI': 'CHI',
     'PHX': 'PHX',
+    'PHO': 'PHX',
     'POR': 'POR',
+    'PTF': 'POR',
+    'PDX': 'POR',
     'DAL': 'DAL',
     'ATL': 'ATL',
     'CON': 'CON',
+    'CONN': 'CON',
+    'CT': 'CON',
     'SEA': 'SEA',
-    'TOR': 'TOR'
+    'TOR': 'TOR',
+    'TOT': 'TOR'
 }
 
 CANONICAL_ABBR_TO_FULL = {
@@ -88,9 +102,16 @@ def fetch_fanduel_odds():
                 over_american = fd_odds.get('over')
                 under_american = fd_odds.get('under')
                 
-                # Convert date from start_time
+                # Convert date from start_time into America/New_York local date
                 start_time = g.get('start_time')
-                match_date = start_time.split('T')[0] if start_time else None
+                if start_time:
+                    try:
+                        dt_utc = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                        match_date = dt_utc.astimezone(ZoneInfo('America/New_York')).strftime('%Y-%m-%d')
+                    except Exception:
+                        match_date = start_time.split('T')[0]
+                else:
+                    match_date = None
                 
                 if ml_home is not None and ml_away is not None:
                     home_odds = american_to_decimal(ml_home)
@@ -112,3 +133,4 @@ def fetch_fanduel_odds():
     except Exception as e:
         print('Error fetching FanDuel odds:', e)
         return []
+

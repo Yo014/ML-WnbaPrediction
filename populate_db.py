@@ -324,6 +324,10 @@ def process_player_stats(df):
     """
     processed_records = []
     for _, row in df.iterrows():
+        team = row.get('TEAM_ABBREVIATION')
+        if not team or pd.isna(team):
+            continue
+
         gp = row.get('GP', 0)
         if gp <= 0:
             continue
